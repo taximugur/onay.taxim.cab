@@ -298,6 +298,10 @@ async function _getTotalCount(page) {
  */
 async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   let sent = 0, skipped = 0, failed = 0;
+  // Bugün 2+ kez gönderilmiş ref'ler — tekrar gönderilmez
+  const { getTodayBlockedRefs } = require('./db');
+  const blockedRefs = getTodayBlockedRefs();
+  if (blockedRefs.size > 0) logger.info('Bugün limit dolmuş (2x): ' + blockedRefs.size + ' ref atlanacak');
 
   const total = await applyPortalFilters(page, filters || {});
 
@@ -332,6 +336,14 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
 
       const ref = ((await cells[0].textContent()) || '').trim();
       if (!ref) continue;
+
+      // Günde 2 kez sınırı — bugün 2+ kez gönderildiyse atla
+      if (blockedRefs.has(ref)) {
+        skipped++;
+        logger.info('Günlük limit (2x): ' + ref + ' atlandı');
+        if (onProgress) onProgress({ ref, status: 'daily-limit', gonderilenSms: 0, manuelLimit: 0, sent, skipped, failed, total });
+        continue;
+      }
 
       const gonderilenSms = parseInt(((await cells[6].textContent()) || '0').trim()) || 0;
       const manuelLimit   = parseInt(((await cells[7].textContent()) || '0').trim()) || 0;

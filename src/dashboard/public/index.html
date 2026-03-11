@@ -351,6 +351,9 @@ socket.on('sms:sent', (d) => {
   } else if (d.status === 'limit') {
     msg = `⏭ ${pos}${d.ref} — limit dolu (${d.gonderilenSms}/${d.manuelLimit})`;
     cls = 'warn';
+  } else if (d.status === 'daily-limit') {
+    msg = `⛔ ${pos}${d.ref} — günlük limit (bugün 2x gönderildi)`;
+    cls = 'warn';
   } else {
     msg = `✗ ${pos}${d.ref} — hata${d.error ? ': ' + d.error : ''}`;
     cls = 'err';

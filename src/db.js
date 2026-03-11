@@ -137,6 +137,20 @@ function updateAfterSMS(referansNo, sonKullanimTarihi) {
   });
 }
 
+// Bugün bu sistemle 2+ kez başarıyla SMS gönderilmiş ref'leri döner (Set)
+function getTodayBlockedRefs() {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const rows = db.prepare(`
+    SELECT referansNo
+    FROM sms_log
+    WHERE durum = 'ok'
+      AND date(tarih) = ?
+    GROUP BY referansNo
+    HAVING COUNT(*) >= 2
+  `).all(today);
+  return new Set(rows.map(r => r.referansNo));
+}
+
 function logSMS({ referansNo, durum, gonderilenSms, manuelLimit, sonKullanimTarihi, hata }) {
   logSMSStmt.run({
     referansNo,
@@ -148,4 +162,4 @@ function logSMS({ referansNo, durum, gonderilenSms, manuelLimit, sonKullanimTari
   });
 }
 
-module.exports = { bulkInsert, getState, setState, getCount, queryRecords, logSMS, updateAfterSMS, db };
+module.exports = { bulkInsert, getState, setState, getCount, queryRecords, logSMS, updateAfterSMS, getTodayBlockedRefs, db };

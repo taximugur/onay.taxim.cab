@@ -6,9 +6,17 @@ const logger = require('./src/logger');
 const eventBus = require('./src/events');
 const JobManager = require('./src/job-manager');
 const { startDashboard } = require('./src/dashboard/server');
+const { getState, setState } = require('./src/db');
 
 async function main() {
   logger.info('=== Shell ExtraCard Bot başlatılıyor ===');
+
+  // Stale "running" state temizle (önceki oturum crash/restart'tan kalmış olabilir)
+  const dbState = getState();
+  if (dbState.status === 'running') {
+    setState({ status: 'idle' });
+    logger.info('DB stale status temizlendi (running → idle)');
+  }
 
   // Browser başlat
   const browser = await chromium.launch({ headless: config.HEADLESS !== false });

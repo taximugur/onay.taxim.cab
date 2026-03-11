@@ -42,11 +42,17 @@ class JobManager {
   stop() {
     this._stopped = true;
     this._paused = false;
-    if (this.currentJob) {
-      this.bus.emit('status', { module: this.currentJob, state: 'stopped' });
-      logger.info('Job durduruldu: ' + this.currentJob);
-    }
+    const job = this.currentJob;
     this.currentJob = null;
+    if (job) {
+      this.bus.emit('status', { module: job, state: 'stopped' });
+      logger.info('Job durduruldu: ' + job);
+    } else {
+      // Aktif job yok ama UI stale state'te olabilir — her iki modülü sıfırla
+      this.bus.emit('status', { module: 'scraper', state: 'stopped' });
+      this.bus.emit('status', { module: 'sms', state: 'stopped' });
+      logger.info('Stop çağrıldı (aktif job yoktu, UI sıfırlandı)');
+    }
   }
 
   isRunning() { return !!this.currentJob && !this._paused && !this._stopped; }

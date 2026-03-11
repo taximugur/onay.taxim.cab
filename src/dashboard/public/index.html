@@ -255,7 +255,11 @@ socket.on('connect', () => updateHeader('connected', '#22c55e'));
 socket.on('disconnect', () => updateHeader('Bağlantı kesildi', '#ef4444'));
 
 socket.on('init', (data) => {
-  updateScraperUI(data.currentJob === 'scraper' ? 'running' : (data.status || 'idle'));
+  // currentJob yokken DB'de stale 'running'/'paused' kalabilir → 'idle' göster
+  let scraperSt = data.currentJob === 'scraper'
+    ? (data.paused ? 'paused' : 'running')
+    : (['running','paused'].includes(data.status) ? 'idle' : (data.status || 'idle'));
+  updateScraperUI(scraperSt);
   updateSmsUI(data.currentJob === 'sms' ? 'running' : 'idle');
   if (data.dbCount !== undefined) document.getElementById('sc-dbcount').textContent = fmt(data.dbCount);
   if (data.lastPage && data.totalPages) document.getElementById('sc-pages').textContent = data.lastPage + '/' + data.totalPages;

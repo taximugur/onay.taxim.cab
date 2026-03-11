@@ -82,6 +82,25 @@ async function clickNextPage(page) {
   return false;
 }
 
+// Session refresh sonrası hedef sayfaya git (page 1'den ileri tıklayarak)
+async function navigateToPage(page, targetPage) {
+  if (targetPage <= 1) return;
+  logger.info('Session sonrasi sayfa ' + targetPage + "'e gidiliyor...");
+  for (let p = 1; p < targetPage; p++) {
+    const clicked = await clickNextPage(page);
+    if (!clicked) break;
+    try {
+      await page.waitForFunction(() => {
+        const r = document.querySelector('[class*="rdt_TableRow"]');
+        return r && r.textContent.trim().length > 0;
+      }, { timeout: 8000 });
+    } catch(e) { await humanDelay(300, 500); }
+    if (p % 50 === 0) logger.info('Konum: ' + p + '/' + (targetPage-1));
+  }
+  await waitForTable(page);
+  logger.info('Hedef sayfaya ulasildi: ' + targetPage);
+}
+
 async function scrapeAllRecords(page, onProgress) {
   const state = getState();
   const startPage = (state.lastPage || 0) + 1;
@@ -90,30 +109,13 @@ async function scrapeAllRecords(page, onProgress) {
   await waitForTable(page);
 
   let rowsPerPage = state.rowsPerPage || 30;
-  if (startPage === 1) {
-    rowsPerPage = await setRowsPerPage(page);
-    await waitForTable(page);
-  } else {
-    // Devam modunda: rows per page ayarla, sonra hedef sayfaya git
-    rowsPerPage = await setRowsPerPage(page);
-    await waitForTable(page);
+  rowsPerPage = await setRowsPerPage(page);
+  await waitForTable(page);
+
+  // Devam modunda hedef sayfaya git
+  if (startPage > 1) {
     logger.info('Devam modu: sayfa ' + startPage + "'e gidiliyor...");
-    // İlk sayfadan başla, hızlıca hedef sayfaya atla
-    // React Data Table'da direkt sayfa atlamak için son sayfa → geri yok
-    // En hızlı yol: next'e basarak geç (her biri çok hızlı)
-    for (let p = 1; p < startPage; p++) {
-      const clicked = await clickNextPage(page);
-      if (!clicked) break;
-      try {
-        await page.waitForFunction(() => {
-          const r = document.querySelector('[class*="rdt_TableRow"]');
-          return r && r.textContent.trim().length > 0;
-        }, { timeout: 8000 });
-      } catch(e) { await humanDelay(300, 500); }
-      if (p % 50 === 0) logger.info('Konum: ' + p + '/' + (startPage-1));
-    }
-    logger.info('Hedef sayfaya ulasildi: ' + startPage);
-    await waitForTable(page);
+    await navigateToPage(page, startPage);
   }
 
   const total = await getTotalRecords(page);
@@ -129,7 +131,14 @@ async function scrapeAllRecords(page, onProgress) {
       const rowCheck = await page.$('[class*="rdt_TableRow"]');
       if (!rowCheck) {
         const alive = await checkSession(page);
-        if (!alive) { await refreshSession(page); await setRowsPerPage(page); }
+        if (!alive) {
+          // Session bitti: yeniden login + approval sayfası + doğru sayfaya git
+          await refreshSession(page);
+          await setRowsPerPage(page);
+          await navigateToPage(page, page_n);
+        } else {
+          await page.waitForLoadState('networkidle', { timeout: 10000 });
+        }
         await waitForTable(page);
       }
       const recs = await scrapeCurrentPage(page);
@@ -144,7 +153,12 @@ async function scrapeAllRecords(page, onProgress) {
 
     if (page_n % config.SESSION_CHECK_EVERY === 0) {
       const alive = await checkSession(page);
-      if (!alive) { await refreshSession(page); await setRowsPerPage(page); await waitForTable(page); }
+      if (!alive) {
+        await refreshSession(page);
+        await setRowsPerPage(page);
+        await navigateToPage(page, page_n + 1);
+        await waitForTable(page);
+      }
     }
 
     if (page_n >= totalPages) break;

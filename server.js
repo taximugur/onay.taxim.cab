@@ -12,6 +12,11 @@ app.use('/data', express.static(path.join(__dirname, 'data')));
 
 let botProcess = null;
 let logBuffer = [];
+let botStartTime = null;
+let convergenceCount = 0;
+const MAX_CONVERGENCE = 8;
+const CONVERGENCE_THRESHOLD = 30; // Bu kadar eksik varsa yeniden tara
+
 const sseClients = new Set();
 
 function broadcast(msg) {
@@ -34,13 +39,66 @@ function getDB() {
 
 function getState() {
   const db = getDB();
-  if (!db) return { status: 'idle', lastPage: 0, totalPages: 0, totalRecords: 0, lastRun: null };
+  if (!db) return { status: 'idle', lastPage: 0, totalPages: 0, totalRecords: 0, lastRun: null, dbCount: 0 };
   try {
     const s = db.prepare('SELECT * FROM scrape_state WHERE id=1').get() || {};
     s.dbCount = db.prepare('SELECT COUNT(*) as n FROM records').get().n;
     db.close();
     return s;
   } catch { db.close(); return { status: 'idle', lastPage: 0, totalPages: 0, dbCount: 0 }; }
+}
+
+function resetLastPage() {
+  try {
+    const Database = require('better-sqlite3');
+    const db2 = new Database(path.join(__dirname, 'data', 'extracard.db'));
+    db2.prepare("UPDATE scrape_state SET lastPage=0, totalPages=0, status='idle' WHERE id=1").run();
+    db2.close();
+  } catch(e) { addLog('[WARN] Sifirlama hatasi: ' + e.message); }
+}
+
+// ─── Bot başlatma fonksiyonu (hem UI hem auto-convergence kullanır) ─────────
+function launchBot() {
+  botStartTime = Date.now();
+  botProcess = spawn('node', ['index.js'], { cwd: __dirname, env: { ...process.env } });
+
+  botProcess.stdout.on('data', chunk => {
+    chunk.toString().split('\n').filter(Boolean).forEach(line => {
+      addLog(line);
+      const m = line.match(/Sayfa (\d+)\/(\d+).*DB toplam: ([\d,]+)/);
+      if (m) {
+        const db = parseInt(m[3].replace(/,/g,''));
+        broadcast({ type: 'progress', page: parseInt(m[1]), totalPages: parseInt(m[2]), dbCount: db });
+      }
+    });
+  });
+
+  botProcess.stderr.on('data', chunk => {
+    chunk.toString().split('\n').filter(Boolean).forEach(l => addLog('[ERR] '+l));
+  });
+
+  botProcess.on('close', code => {
+    botProcess = null;
+    const s = getState();
+    const eksik = (s.totalRecords || 0) - (s.dbCount || 0);
+
+    // Başarılı bitti + eksik kayıt var + limit aşılmadı → yeniden tara
+    if (code === 0 && eksik > CONVERGENCE_THRESHOLD && convergenceCount < MAX_CONVERGENCE) {
+      convergenceCount++;
+      addLog('[INFO] ⟳ Eksik kayit: ' + eksik + ' — yeniden tarama ' + convergenceCount + '/' + MAX_CONVERGENCE + '...');
+      broadcast({ type: 'status', status: 'running', dbCount: s.dbCount || 0 });
+      resetLastPage();
+      setTimeout(launchBot, 3000);
+      return;
+    }
+
+    // Bitti (normal, yakınsandı veya hata)
+    if (code === 0) convergenceCount = 0;
+    const status = code === 0 ? 'done' : (code === null ? 'stopped' : 'error');
+    broadcast({ type: 'status', status, dbCount: s.dbCount || 0 });
+    const eksikStr = s.totalRecords > 0 ? ' / ' + s.totalRecords + ' hedef' : '';
+    addLog('=== Bot sonlandi (exit:' + code + ') — DB: ' + (s.dbCount||0) + eksikStr + ' ===');
+  });
 }
 
 // ─── Ana Panel ───────────────────────────────────────────────────────────────
@@ -85,8 +143,6 @@ progress::-webkit-progress-bar{background:#e2e8f0;border-radius:3px}
 progress::-webkit-progress-value{background:#FFCC00;border-radius:3px}
 #log{background:#0d1117;color:#c9d1d9;font-family:'Menlo',monospace;font-size:11px;padding:14px;border-radius:8px;height:420px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
 .li{color:#79c0ff}.lw{color:#e3b341}.le{color:#f85149}.lo{color:#56d364}
-.sep{height:1px;background:#f0f0f0;margin:12px 0}
-.dl-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 </style>
 </head>
 <body>
@@ -97,7 +153,6 @@ progress::-webkit-progress-value{background:#FFCC00;border-radius:3px}
 </header>
 
 <div class="wrap">
-  <!-- SOL -->
   <div>
     <div class="card">
       <h2>Bot Kontrolü</h2>
@@ -140,7 +195,6 @@ progress::-webkit-progress-value{background:#FFCC00;border-radius:3px}
     </div>
   </div>
 
-  <!-- SAĞ -->
   <div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -153,9 +207,7 @@ progress::-webkit-progress-value{background:#FFCC00;border-radius:3px}
 </div>
 
 <script>
-let timer = null;
-let t0 = null;
-
+let timer = null, t0 = null;
 const es = new EventSource('/events');
 es.onmessage = e => {
   const d = JSON.parse(e.data);
@@ -170,7 +222,7 @@ function appendLog(msg) {
   let cls = 'li';
   if (msg.includes('[ERROR]')||msg.includes('Fatal')) cls='le';
   else if (msg.includes('[WARN]')) cls='lw';
-  else if (msg.includes('[OK]')||msg.includes('TAMAMLANDI')) cls='lo';
+  else if (msg.includes('[OK]')||msg.includes('TAMAMLANDI')||msg.includes('⟳')) cls='lo';
   el.className = cls;
   el.textContent = msg;
   b.appendChild(el);
@@ -180,15 +232,13 @@ function appendLog(msg) {
 const LABELS = {idle:'Hazır',running:'Çalışıyor',done:'Tamamlandı',error:'Hata',stopped:'Durduruldu'};
 function setStatus(d) {
   const badge = document.getElementById('badge');
-  const stxt = document.getElementById('stxt');
-  const dot = document.getElementById('dot');
   badge.className = 'badge ' + d.status;
-  stxt.textContent = LABELS[d.status]||d.status;
-  dot.className = 'dot' + (d.status==='running'?' pulse':'');
+  document.getElementById('stxt').textContent = LABELS[d.status]||d.status;
+  document.getElementById('dot').className = 'dot' + (d.status==='running'?' pulse':'');
   document.getElementById('btnStart').disabled = d.status==='running';
   document.getElementById('btnFresh').disabled = d.status==='running';
   document.getElementById('btnStop').disabled = d.status!=='running';
-  if (d.status==='running' && !t0) { t0=Date.now(); timer=setInterval(()=>{ const s=Math.floor((Date.now()-t0)/1000); document.getElementById('s-time').textContent=Math.floor(s/60)+'dk '+s%60+'s'; },1000); }
+  if (d.status==='running') { if (!t0) { t0 = d.startTime ? d.startTime : Date.now(); clearInterval(timer); timer=setInterval(()=>{ const s=Math.floor((Date.now()-t0)/1000); document.getElementById('s-time').textContent=Math.floor(s/60)+'dk '+s%60+'s'; },1000); } }
   if (d.status!=='running') { clearInterval(timer); timer=null; t0=null; }
   if (d.dbCount !== undefined) document.getElementById('s-db').textContent = d.dbCount.toLocaleString('tr-TR');
 }
@@ -201,25 +251,22 @@ function setProgress(d) {
 }
 
 async function startBot(fresh) {
-  if (fresh && !confirm('Sıfırdan tarama: mevcut ' + document.getElementById('s-db').textContent + ' kayıt korunur, sayfa sayacı sıfırlanır. Devam?')) return;
-  const body = { username: document.getElementById('uname').value, password: document.getElementById('pass').value, fresh: !!fresh };
-  await fetch('/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  if (fresh && !confirm('Sıfırdan tarama: mevcut kayıtlar korunur, sayfa sayacı sıfırlanır. Devam?')) return;
+  await fetch('/start', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ username: document.getElementById('uname').value, password: document.getElementById('pass').value, fresh }) });
 }
 
-async function stopBot() {
-  await fetch('/stop', { method:'POST' });
-}
+async function stopBot() { await fetch('/stop', { method:'POST' }); }
 
 async function downloadExcel() {
   const from = document.getElementById('dfrom').value;
   const to = document.getElementById('dto').value;
-  const fld = document.getElementById('fld').value;
-  if (!from && !to) { document.getElementById('dl-status').textContent='Lütfen en az bir tarih girin veya Tümünü İndir kullanın'; return; }
+  if (!from && !to) { document.getElementById('dl-status').textContent='Lütfen en az bir tarih girin'; return; }
+  const p = new URLSearchParams({ field: document.getElementById('fld').value });
+  if (from) p.set('from', from);
+  if (to) p.set('to', to);
   document.getElementById('dl-status').textContent = 'Hazırlanıyor...';
-  const params = new URLSearchParams({ field: fld });
-  if (from) params.set('from', from);
-  if (to) params.set('to', to);
-  window.location = '/excel?' + params.toString();
+  window.location = '/excel?' + p.toString();
   setTimeout(() => document.getElementById('dl-status').textContent = '', 3000);
 }
 
@@ -230,7 +277,7 @@ async function downloadAll() {
 }
 
 fetch('/logs').then(r=>r.json()).then(logs=>logs.forEach(l=>appendLog(l.msg)));
-fetch('/state').then(r=>r.json()).then(s=>setStatus({status:s.status||'idle',dbCount:s.dbCount||0}));
+fetch('/state').then(r=>r.json()).then(s=>setStatus({status:s.status||'idle',dbCount:s.dbCount||0,startTime:s.botStartTime||null}));
 </script>
 </body>
 </html>`);
@@ -245,7 +292,7 @@ app.get('/events', (req, res) => {
   req.on('close', () => sseClients.delete(res));
 });
 
-app.get('/state', (req, res) => res.json(getState()));
+app.get('/state', (req, res) => res.json({ ...getState(), botStartTime }));
 app.get('/logs', (req, res) => res.json(logBuffer));
 
 // ─── Bot Başlat ──────────────────────────────────────────────────────────────
@@ -253,15 +300,12 @@ app.post('/start', (req, res) => {
   if (botProcess) return res.json({ ok: false, msg: 'Zaten çalışıyor' });
 
   const { username, password, fresh } = req.body;
+
   if (fresh) {
-    try {
-      const Database = require('better-sqlite3');
-      const db2 = new Database(path.join(__dirname, 'data', 'extracard.db'));
-      db2.prepare("UPDATE scrape_state SET lastPage=0, totalPages=0, status='idle' WHERE id=1").run();
-      db2.close();
-      addLog('[INFO] Sayfa sayacı sıfırlandı — sıfırdan tarama başlıyor...');
-    } catch(e) { addLog('[WARN] Sıfırlama hatası: ' + e.message); }
+    resetLastPage();
+    addLog('[INFO] Sayfa sayacı sıfırlandı — sıfırdan tarama başlıyor...');
   }
+
   const env_content = [
     'LOGIN_URL=https://extracard.turkiyeshell.com',
     `USERNAME=${username || ''}`,
@@ -275,36 +319,15 @@ app.post('/start', (req, res) => {
   fs.writeFileSync(path.join(__dirname, '.env'), env_content);
 
   logBuffer = [];
-  broadcast({ type: 'status', status: 'running', dbCount: getState().dbCount || 0 });
-
-  botProcess = spawn('node', ['index.js'], { cwd: __dirname, env: { ...process.env } });
-
-  botProcess.stdout.on('data', chunk => {
-    chunk.toString().split('\n').filter(Boolean).forEach(line => {
-      addLog(line);
-      const m = line.match(/Sayfa (\d+)\/(\d+).*DB toplam: ([\d,]+)/);
-      if (m) {
-        const db = parseInt(m[3].replace(/,/g,''));
-        broadcast({ type: 'progress', page: parseInt(m[1]), totalPages: parseInt(m[2]), dbCount: db });
-      }
-    });
-  });
-  botProcess.stderr.on('data', chunk => {
-    chunk.toString().split('\n').filter(Boolean).forEach(l => addLog('[ERR] '+l));
-  });
-  botProcess.on('close', code => {
-    botProcess = null;
-    const s = getState();
-    const status = code === 0 ? 'done' : (code === null ? 'stopped' : 'error');
-    broadcast({ type: 'status', status, dbCount: s.dbCount || 0 });
-    addLog('=== Bot sonlandi (exit:' + code + ') — DB: ' + (s.dbCount||0) + ' kayit ===');
-  });
-
+  convergenceCount = 0;
+  broadcast({ type: 'status', status: 'running', dbCount: getState().dbCount || 0, startTime: botStartTime });
+  launchBot();
   res.json({ ok: true });
 });
 
 // ─── Bot Durdur ──────────────────────────────────────────────────────────────
 app.post('/stop', (req, res) => {
+  convergenceCount = MAX_CONVERGENCE; // yakınsamayı durdur
   if (botProcess) botProcess.kill('SIGTERM');
   res.json({ ok: true });
 });
@@ -334,16 +357,16 @@ app.get('/excel', async (req, res) => {
     wb.creator = 'Shell ExtraCard Bot';
     const sheet = wb.addWorksheet('Müşteri Onayı Bekleyen');
     sheet.columns = [
-      { header:'Referans No',  key:'referansNo',       width:15 },
-      { header:'İsim',         key:'isim',             width:15 },
-      { header:'Soyisim',      key:'soyisim',          width:15 },
-      { header:'Kart No',      key:'kartNo',           width:22 },
-      { header:'GSM',          key:'gsm',              width:15 },
-      { header:'Plaka',        key:'plaka',            width:12 },
-      { header:'Gönderilen SMS',key:'gonderilenSms',   width:15 },
-      { header:'Manuel SMS Limiti',key:'manuelSmsLimiti',width:18},
-      { header:'Kayıt Tarihi', key:'kayitTarihi',      width:20 },
-      { header:'Son Kullanım', key:'sonKullanimTarihi',width:20 },
+      { header:'Referans No',      key:'referansNo',        width:15 },
+      { header:'İsim',             key:'isim',              width:15 },
+      { header:'Soyisim',          key:'soyisim',           width:15 },
+      { header:'Kart No',          key:'kartNo',            width:22 },
+      { header:'GSM',              key:'gsm',               width:15 },
+      { header:'Plaka',            key:'plaka',             width:12 },
+      { header:'Gönderilen SMS',   key:'gonderilenSms',     width:15 },
+      { header:'Manuel SMS Limiti',key:'manuelSmsLimiti',   width:18 },
+      { header:'Kayıt Tarihi',     key:'kayitTarihi',       width:20 },
+      { header:'Son Kullanım',     key:'sonKullanimTarihi', width:20 },
     ];
     const hdr = sheet.getRow(1);
     hdr.font = { bold: true };
@@ -358,10 +381,8 @@ app.get('/excel', async (req, res) => {
 
     const ts = new Date().toISOString().slice(0,10);
     const label = (from||to) ? `_${from||''}_${to||''}` : '_tumu';
-    const filename = `shell-extracard${label}_${ts}.xlsx`;
-
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="shell-extracard${label}_${ts}.xlsx"`);
     await wb.xlsx.write(res);
     res.end();
   } catch(e) {

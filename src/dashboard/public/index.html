@@ -345,7 +345,8 @@ socket.on('sms:sent', (d) => {
   const pos = (d.processed && d.totalCount) ? `[${fmt(d.processed)}/${fmt(d.totalCount)}] ` : '';
   let msg, cls;
   if (d.status === 'ok') {
-    msg = `✓ ${pos}${d.ref} — gönderildi`;
+    const sonTarih = d.sonKullanimTarihi ? ` · son: ${d.sonKullanimTarihi}` : '';
+    msg = `✓ ${pos}${d.ref} — gönderildi${sonTarih}`;
     cls = 'ok';
   } else if (d.status === 'limit') {
     msg = `⏭ ${pos}${d.ref} — limit dolu (${d.gonderilenSms}/${d.manuelLimit})`;

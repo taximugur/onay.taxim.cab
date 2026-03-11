@@ -345,19 +345,28 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
 
         if (success) {
           sent++;
-          logger.info('SMS gönderildi: ' + ref);
-          if (onProgress) onProgress({ ref, status: 'ok', sent, skipped, failed, total });
+          // Kısa bekleme — portal hücreyi güncellesin
+          await humanDelay(400, 600);
+          // Güncel sonKullanimTarihi ve gonderilenSms'i portaldan oku
+          let sonKullanimTarihi = null;
+          let yeniGonderilenSms = gonderilenSms;
+          try {
+            const updatedCells = await row.$$('[class*="rdt_TableCell"]');
+            if (updatedCells[9]) sonKullanimTarihi = ((await updatedCells[9].textContent()) || '').trim() || null;
+            if (updatedCells[6]) yeniGonderilenSms = parseInt(((await updatedCells[6].textContent()) || '0').trim()) || gonderilenSms;
+          } catch(e2) {}
+          logger.info('SMS gönderildi: ' + ref + (sonKullanimTarihi ? ' | son: ' + sonKullanimTarihi : ''));
+          if (onProgress) onProgress({ ref, status: 'ok', gonderilenSms: yeniGonderilenSms, manuelLimit, sonKullanimTarihi, sent, skipped, failed, total });
         } else {
           failed++;
-          if (onProgress) onProgress({ ref, status: 'error', sent, skipped, failed, total });
+          if (onProgress) onProgress({ ref, status: 'error', gonderilenSms, manuelLimit, sent, skipped, failed, total });
+          await humanDelay(400, 700);
         }
-
-        await humanDelay(400, 700);
 
       } catch(e) {
         logger.warn('SMS tıklama hatası ' + ref + ': ' + e.message);
         failed++;
-        if (onProgress) onProgress({ ref, status: 'error', error: e.message, sent, skipped, failed, total });
+        if (onProgress) onProgress({ ref, status: 'error', error: e.message, gonderilenSms, manuelLimit, sent, skipped, failed, total });
       }
     }
 

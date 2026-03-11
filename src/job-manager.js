@@ -1,6 +1,6 @@
 const { scrapeAllRecords } = require('./scraper');
 const { sendBulkSMS, applyPortalFilters } = require('./sms-sender');
-const { getState, setState, getCount } = require('./db');
+const { getState, setState, getCount, logSMS } = require('./db');
 const logger = require('./logger');
 
 class JobManager {
@@ -137,6 +137,18 @@ class JobManager {
           const rate = processed > 0 ? processed / (elapsed / 60000) : 0;
           const eta  = rate > 0 ? Math.round((prog.total - processed) / rate) : 0;
 
+          // DB'ye kaydet
+          try {
+            logSMS({
+              referansNo:       prog.ref,
+              durum:            prog.status,
+              gonderilenSms:    prog.gonderilenSms,
+              manuelLimit:      prog.manuelLimit,
+              sonKullanimTarihi: prog.sonKullanimTarihi,
+              hata:             prog.error || null,
+            });
+          } catch(e) { logger.warn('logSMS DB hatası: ' + e.message); }
+
           this.bus.emit('sms:sent', {
             ref: prog.ref,
             status: prog.status,
@@ -144,6 +156,7 @@ class JobManager {
             totalCount: prog.total,
             gonderilenSms: prog.gonderilenSms,
             manuelLimit: prog.manuelLimit,
+            sonKullanimTarihi: prog.sonKullanimTarihi,
             error: prog.error,
           });
           this.bus.emit('sms:progress', {

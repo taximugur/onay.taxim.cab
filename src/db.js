@@ -39,6 +39,20 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_kayit_iso ON records(kayitTarihi_iso);
   CREATE INDEX IF NOT EXISTS idx_son_iso   ON records(sonKullanimiIso);
+
+  CREATE TABLE IF NOT EXISTS sms_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    referansNo      TEXT NOT NULL,
+    tarih           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    durum           TEXT NOT NULL,
+    gonderilenSms   INTEGER,
+    manuelLimit     INTEGER,
+    sonKullanimTarihi TEXT,
+    hata            TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sms_log_ref   ON sms_log(referansNo);
+  CREATE INDEX IF NOT EXISTS idx_sms_log_tarih ON sms_log(tarih);
 `);
 
 // DD.MM.YYYY HH:MM:SS → YYYY-MM-DD
@@ -101,4 +115,20 @@ function queryRecords({ dateFrom, dateTo, field } = {}) {
   return db.prepare(sql).all(params);
 }
 
-module.exports = { bulkInsert, getState, setState, getCount, queryRecords, db };
+const logSMSStmt = db.prepare(`
+  INSERT INTO sms_log (referansNo, durum, gonderilenSms, manuelLimit, sonKullanimTarihi, hata)
+  VALUES (@referansNo, @durum, @gonderilenSms, @manuelLimit, @sonKullanimTarihi, @hata)
+`);
+
+function logSMS({ referansNo, durum, gonderilenSms, manuelLimit, sonKullanimTarihi, hata }) {
+  logSMSStmt.run({
+    referansNo,
+    durum,
+    gonderilenSms: gonderilenSms || null,
+    manuelLimit:   manuelLimit   || null,
+    sonKullanimTarihi: sonKullanimTarihi || null,
+    hata:          hata          || null,
+  });
+}
+
+module.exports = { bulkInsert, getState, setState, getCount, queryRecords, logSMS, db };

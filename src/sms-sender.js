@@ -418,6 +418,24 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       );
     } catch { await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}); }
 
+    // Sayfa geçişinde session kopmuş olabilir — URL kontrol et
+    const urlAfterNext = page.url();
+    if (urlAfterNext.includes('login') || urlAfterNext.includes('giris') || !urlAfterNext.includes('validation')) {
+      logger.warn('SMS sayfa geçişinde session koptu (sayfa ' + pageNum + '→' + (pageNum + 1) + '), kurtarma yapılıyor...');
+      await refreshSession(page);
+      // Filtreleri yeniden uygula
+      await applyPortalFilters(page, filters || {}, 2);
+      await setMaxRowsPerPage(page);
+      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
+      // Doğru sayfaya git: pageNum kere "next" tıkla (sayfa 1'den pageNum+1'e)
+      for (let p = 0; p < pageNum; p++) {
+        await _clickNext(page);
+        await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 8000 }).catch(() => {});
+        await humanDelay(400, 600);
+      }
+      logger.info('Sayfa ' + (pageNum + 1) + "'e kurtarma ile ulaşıldı");
+    }
+
     await humanDelay(200, 400);
   }
 

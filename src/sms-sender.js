@@ -1,6 +1,23 @@
+const fs = require('fs');
 const { humanDelay } = require('./utils');
 const { navigateToApprovalPage, checkSession, refreshSession } = require('./auth');
 const logger = require('./logger');
+
+const AYLAR = ['', 'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+               'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+
+function parseDate(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return { day, month, year };
+}
+
+async function shot(page, name) {
+  try {
+    const p = 'screenshots/filter-' + name + '.png';
+    await page.screenshot({ path: p });
+    logger.info('Screenshot: ' + p);
+  } catch(e) {}
+}
 
 /**
  * Portaldaki filtre alanlarını doldurur, "Ara" basar ve toplam kayıt sayısını döner.
@@ -10,52 +27,230 @@ async function applyPortalFilters(page, filters = {}) {
   await navigateToApprovalPage(page);
   await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 });
 
-  const hasDate   = !!(filters.kayitStart || filters.kayitEnd);
+  // DOM'u kaydet — selector'leri kesinleştirmek için
+  try {
+    const html = await page.content();
+    fs.writeFileSync('data/page-dom.html', html);
+    logger.info('DOM kaydedildi: data/page-dom.html');
+  } catch(e) {}
+
+  await shot(page, '1-before');
+
+  const hasDate   = !!(filters.kayitStart && filters.kayitEnd);
   const hasSearch = !!(filters.search && filters.search.trim());
 
+  if (hasDate) {
+    const start = parseDate(filters.kayitStart);
+    const end   = parseDate(filters.kayitEnd);
+
+    try {
+      // Tarih input'una tıkla — takvim açılır
+      const dateInput = page.locator(
+        'input[placeholder*="Kayıt Tarihi"], ' +
+        'input[placeholder*="kayıt tarihi"], ' +
+        'input[placeholder*="tarih"], ' +
+        'label:has-text("Kayıt Tarihi") + input, ' +
+        'label:has-text("Kayıt Tarihi") ~ input'
+      ).first();
+
+      await dateInput.click({ timeout: 8000 });
+      await humanDelay(600, 900);
+      await shot(page, '2-calendar-open');
+
+      // Takvim popup'ını bekle
+      const calSel = '.datepicker, .calendar, [class*="picker"], [class*="calendar"], ' +
+                     '[class*="daterangepicker"], [class*="DatePicker"], [class*="date-picker"]';
+      try {
+        await page.waitForSelector(calSel, { timeout: 5000 });
+      } catch(e) {
+        logger.warn('Takvim popup bekleniyor timeout, devam ediliyor...');
+      }
+
+      // Başlangıç ayına git
+      await navigateToMonth(page, start.month, start.year);
+      await humanDelay(300, 500);
+
+      // Başlangıç gününe tıkla
+      await clickDay(page, start.day);
+      await humanDelay(400, 600);
+      await shot(page, '3-start-selected');
+
+      // Bitiş ayına git (farklı aysa)
+      if (end.month !== start.month || end.year !== start.year) {
+        await navigateToMonth(page, end.month, end.year);
+        await humanDelay(300, 500);
+      }
+
+      // Bitiş gününe tıkla
+      await clickDay(page, end.day);
+      await humanDelay(500, 800);
+      await shot(page, '4-end-selected');
+
+      // Takvim kapanmadıysa Escape ile kapat
+      const calStillOpen = await page.$(calSel).catch(() => null);
+      if (calStillOpen) {
+        await page.keyboard.press('Escape');
+        await humanDelay(300, 500);
+      }
+
+      logger.info('Tarih filtresi uygulandı: ' + filters.kayitStart + ' — ' + filters.kayitEnd);
+    } catch(e) {
+      logger.warn('Tarih filtresi hatası: ' + e.message);
+      await shot(page, 'error-date');
+    }
+  }
+
+  if (hasSearch) {
+    try {
+      const inp = page.locator(
+        'input[placeholder*="içinde ara"], ' +
+        'input[placeholder*="Kayıtlar içinde"], ' +
+        'input[placeholder*="Ara"]'
+      ).first();
+      await inp.fill('');
+      await inp.type(filters.search.trim(), { delay: 40 });
+      logger.info('Arama filtresi: ' + filters.search);
+    } catch(e) {
+      logger.warn('Arama filtresi hatası: ' + e.message);
+    }
+  }
+
+  // "Ara" butonuna tıkla
   if (hasDate || hasSearch) {
-    if (hasDate) {
-      // YYYY-MM-DD → DD-MM-YYYY
-      const toPortal = d => d.split('-').reverse().join('-');
-      const start = filters.kayitStart || filters.kayitEnd;
-      const end   = filters.kayitEnd   || filters.kayitStart;
-      const dateRange = toPortal(start) + ' - ' + toPortal(end);
-
-      try {
-        const inp = page.locator('input[placeholder*="Kayıt Tarihi"], input[placeholder*="kayit"], input[placeholder*="tarih"]').first();
-        await inp.click({ timeout: 5000 });
-        await inp.fill('');
-        await inp.fill(dateRange);
-        logger.info('Tarih filtresi: ' + dateRange);
-      } catch(e) {
-        logger.warn('Tarih filtresi uygulanamadı: ' + e.message);
-      }
-    }
-
-    if (hasSearch) {
-      try {
-        const inp = page.locator('input[placeholder*="içinde ara"], input[placeholder*="Kayıtlar içinde"]').first();
-        await inp.fill(filters.search.trim());
-        logger.info('Arama filtresi: ' + filters.search);
-      } catch(e) {
-        logger.warn('Arama filtresi uygulanamadı: ' + e.message);
-      }
-    }
-
-    // "Ara" butonuna tıkla
     try {
       await page.locator('button:has-text("Ara")').first().click({ timeout: 5000 });
-      await humanDelay(1800, 2500);
+      logger.info('"Ara" butonuna tıklandı');
+      await humanDelay(2000, 2800);
       await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
     } catch(e) {
-      logger.warn('"Ara" butonu tıklanamadı: ' + e.message);
+      logger.warn('"Ara" butonu: ' + e.message);
       await humanDelay(2000, 3000);
     }
+    await shot(page, '5-results');
   }
 
   const total = await _getTotalCount(page);
   logger.info('Portal filtre sonucu: ' + total + ' kayıt');
   return total;
+}
+
+// Takvimde belirtilen ay/yıla git
+async function navigateToMonth(page, targetMonth, targetYear) {
+  for (let i = 0; i < 36; i++) {
+    // Takvim header'ından şu anki ay/yıl oku
+    const headerText = await page.evaluate(() => {
+      const selectors = [
+        '[class*="picker"] [class*="header"]',
+        '[class*="picker"] [class*="title"]',
+        '[class*="calendar"] [class*="header"]',
+        '[class*="calendar"] [class*="title"]',
+        '[class*="daterange"] [class*="header"]',
+        '.datepicker-header',
+        '.month-title',
+        '[class*="month"]',
+      ];
+      for (const s of selectors) {
+        const el = document.querySelector(s);
+        if (el && el.textContent.trim()) return el.textContent.trim();
+      }
+      // Fallback: takvim içindeki tüm text'i al
+      const picker = document.querySelector('[class*="picker"], [class*="calendar"], [class*="daterange"]');
+      return picker ? picker.textContent.substring(0, 100) : '';
+    });
+
+    // Hangi ay ve yıl gösteriliyor?
+    const currentMonth = AYLAR.findIndex(a => a && headerText.includes(a));
+    const yilMatch = headerText.match(/\d{4}/);
+    const currentYear = yilMatch ? parseInt(yilMatch[0]) : 0;
+
+    if (currentMonth === targetMonth && currentYear === targetYear) break;
+
+    const cur = currentYear * 12 + (currentMonth || 0);
+    const tgt = targetYear * 12 + targetMonth;
+
+    if (tgt > cur) {
+      // İleri: ">" butonuna tıkla
+      await page.evaluate(() => {
+        const candidates = [
+          document.querySelector('[class*="picker"] button:last-child'),
+          document.querySelector('[class*="next"]'),
+          document.querySelector('[class*="arrow"]:last-child'),
+          ...(document.querySelectorAll('[class*="picker"] button') || []),
+        ].filter(Boolean);
+        // ">" veya sağ ok olan buton
+        for (const btn of candidates) {
+          const t = btn.textContent.trim();
+          if (t === '>' || t === '›' || t === '→' || t === '»') { btn.click(); return; }
+        }
+        // Fallback: son buton
+        const btns = document.querySelectorAll('[class*="picker"] button, [class*="calendar"] button');
+        if (btns.length > 0) btns[btns.length - 1].click();
+      });
+    } else {
+      // Geri: "<" butonuna tıkla
+      await page.evaluate(() => {
+        const candidates = [
+          document.querySelector('[class*="prev"]'),
+          document.querySelector('[class*="arrow"]:first-child'),
+          ...(document.querySelectorAll('[class*="picker"] button') || []),
+        ].filter(Boolean);
+        for (const btn of candidates) {
+          const t = btn.textContent.trim();
+          if (t === '<' || t === '‹' || t === '←' || t === '«') { btn.click(); return; }
+        }
+        // Fallback: ilk buton
+        const btns = document.querySelectorAll('[class*="picker"] button, [class*="calendar"] button');
+        if (btns.length > 0) btns[0].click();
+      });
+    }
+    await humanDelay(300, 500);
+  }
+}
+
+// Takvimde belirtilen güne tıkla (exact match, disabled/off olmayanlar)
+async function clickDay(page, day) {
+  const clicked = await page.evaluate((targetDay) => {
+    const dayStr = String(targetDay);
+    // Olası selektörler: td, button, div, span ile gün hücreleri
+    const cells = Array.from(document.querySelectorAll(
+      'td, button, [class*="day"], [class*="date"], [class*="cell"]'
+    ));
+
+    for (const cell of cells) {
+      const text = cell.textContent.trim();
+      if (text !== dayStr) continue;
+
+      // Disabled/off/other-month olan hücreleri atla
+      const cls = (cell.className || '').toString().toLowerCase();
+      if (cls.includes('disabled') || cls.includes('off') ||
+          cls.includes('other') || cls.includes('muted') ||
+          cell.hasAttribute('disabled')) continue;
+
+      // Takvim popup içinde mi?
+      const inPicker = cell.closest(
+        '[class*="picker"], [class*="calendar"], [class*="daterange"], .datepicker'
+      );
+      if (!inPicker) continue;
+
+      cell.click();
+      return true;
+    }
+    return false;
+  }, day);
+
+  if (!clicked) {
+    logger.warn('Gün tıklanamadı: ' + day + ', Playwright locator deneniyor...');
+    // Fallback: Playwright locator
+    try {
+      await page.locator(
+        `[class*="picker"] td:not(.disabled):not(.off), ` +
+        `[class*="calendar"] td:not(.disabled):not(.off), ` +
+        `[class*="picker"] [class*="day"]:not(.disabled):not(.off)`
+      ).filter({ hasText: new RegExp('^' + day + '$') }).first().click({ timeout: 3000 });
+    } catch(e) {
+      logger.warn('Gün locator hatası: ' + e.message);
+    }
+  }
 }
 
 async function _getTotalCount(page) {
@@ -73,16 +268,10 @@ async function _getTotalCount(page) {
 /**
  * Portal üzerinde toplu SMS gönder.
  * Filtreler bu fonksiyon içinde uygulanır.
- *
- * @param {Page}     page
- * @param {Object}   filters       - { kayitStart, kayitEnd, search }
- * @param {Function} onProgress    - ({ ref, status, sent, skipped, failed, total })
- * @param {Function} checkPauseStop - async, pause bekler / stop atar
  */
 async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   let sent = 0, skipped = 0, failed = 0;
 
-  // Filtrele, konumlan, toplam al
   const total = await applyPortalFilters(page, filters || {});
 
   await setMaxRowsPerPage(page);
@@ -96,7 +285,6 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     if (checkPauseStop) await checkPauseStop();
 
-    // Session kontrol
     if (pageNum % 50 === 0) {
       const alive = await checkSession(page);
       if (!alive) {
@@ -152,7 +340,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
             if (!success) logger.warn('SMS API: ' + JSON.stringify(json));
           } catch { success = response.status() === 200; }
         } else {
-          success = true; // Response yakalanamadı ama tıklandı
+          success = true;
         }
 
         if (success) {

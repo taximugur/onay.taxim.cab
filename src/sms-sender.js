@@ -1,86 +1,141 @@
 const { humanDelay } = require('./utils');
-const { navigateToApprovalPage } = require('./auth');
-const { checkSession, refreshSession } = require('./auth');
+const { navigateToApprovalPage, checkSession, refreshSession } = require('./auth');
 const logger = require('./logger');
 
 /**
- * Portal üzerinde Playwright ile toplu SMS gönder.
- *
- * @param {Page}     page         - Playwright sayfası
- * @param {Set}      targetRefs   - Gönderilecek referansNo'lar (Set)
- * @param {Function} onProgress   - (sent, skipped, failed, total) callback
- * @param {Function} checkStop    - () => bool, durdurmak için
- * @returns {{ sent, skipped, failed }}
+ * Portaldaki filtre alanlarını doldurur, "Ara" basar ve toplam kayıt sayısını döner.
+ * filters: { kayitStart, kayitEnd, search }  (tarihler YYYY-MM-DD formatında)
  */
-async function sendBulkSMS(page, targetRefs, onProgress, checkStop) {
-  let sent = 0, skipped = 0, failed = 0;
-  const total = targetRefs.size;
-  const remaining = new Set(targetRefs);
-
-  // Onay sayfasına git
+async function applyPortalFilters(page, filters = {}) {
   await navigateToApprovalPage(page);
   await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 });
 
-  // Rows per page max yap
+  const hasDate   = !!(filters.kayitStart || filters.kayitEnd);
+  const hasSearch = !!(filters.search && filters.search.trim());
+
+  if (hasDate || hasSearch) {
+    if (hasDate) {
+      // YYYY-MM-DD → DD-MM-YYYY
+      const toPortal = d => d.split('-').reverse().join('-');
+      const start = filters.kayitStart || filters.kayitEnd;
+      const end   = filters.kayitEnd   || filters.kayitStart;
+      const dateRange = toPortal(start) + ' - ' + toPortal(end);
+
+      try {
+        const inp = page.locator('input[placeholder*="Kayıt Tarihi"], input[placeholder*="kayit"], input[placeholder*="tarih"]').first();
+        await inp.click({ timeout: 5000 });
+        await inp.fill('');
+        await inp.fill(dateRange);
+        logger.info('Tarih filtresi: ' + dateRange);
+      } catch(e) {
+        logger.warn('Tarih filtresi uygulanamadı: ' + e.message);
+      }
+    }
+
+    if (hasSearch) {
+      try {
+        const inp = page.locator('input[placeholder*="içinde ara"], input[placeholder*="Kayıtlar içinde"]').first();
+        await inp.fill(filters.search.trim());
+        logger.info('Arama filtresi: ' + filters.search);
+      } catch(e) {
+        logger.warn('Arama filtresi uygulanamadı: ' + e.message);
+      }
+    }
+
+    // "Ara" butonuna tıkla
+    try {
+      await page.locator('button:has-text("Ara")').first().click({ timeout: 5000 });
+      await humanDelay(1800, 2500);
+      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
+    } catch(e) {
+      logger.warn('"Ara" butonu tıklanamadı: ' + e.message);
+      await humanDelay(2000, 3000);
+    }
+  }
+
+  const total = await _getTotalCount(page);
+  logger.info('Portal filtre sonucu: ' + total + ' kayıt');
+  return total;
+}
+
+async function _getTotalCount(page) {
+  try {
+    const text = await page.evaluate(() => {
+      const el = document.querySelector('[class*="rdt_Pagination"]');
+      return el ? el.innerText : '';
+    });
+    const m = text.match(/\d+\s*-\s*\d+\s+of\s+([\d,]+)/i);
+    if (m) return parseInt(m[1].replace(/,/g, ''));
+  } catch(e) {}
+  return 0;
+}
+
+/**
+ * Portal üzerinde toplu SMS gönder.
+ * Filtreler bu fonksiyon içinde uygulanır.
+ *
+ * @param {Page}     page
+ * @param {Object}   filters       - { kayitStart, kayitEnd, search }
+ * @param {Function} onProgress    - ({ ref, status, sent, skipped, failed, total })
+ * @param {Function} checkPauseStop - async, pause bekler / stop atar
+ */
+async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
+  let sent = 0, skipped = 0, failed = 0;
+
+  // Filtrele, konumlan, toplam al
+  const total = await applyPortalFilters(page, filters || {});
+
   await setMaxRowsPerPage(page);
   await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
 
-  const totalPages = await getTotalPages(page);
-  logger.info('SMS tarama başladı: ' + total + ' hedef, ' + totalPages + ' sayfa');
+  const totalPages = await _getTotalPages(page);
+  logger.info('SMS tarama başladı: ' + total + ' kayıt, ' + totalPages + ' sayfa');
 
   let prevFirstRef = null;
 
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-    if (checkStop && checkStop()) break;
-    if (remaining.size === 0) {
-      logger.info('Tüm hedefler tamamlandı, tarama sonlandırılıyor.');
-      break;
-    }
+    if (checkPauseStop) await checkPauseStop();
 
     // Session kontrol
     if (pageNum % 50 === 0) {
       const alive = await checkSession(page);
       if (!alive) {
         await refreshSession(page);
+        await applyPortalFilters(page, filters || {});
         await setMaxRowsPerPage(page);
         await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
       }
     }
 
-    // Sayfadaki satırları işle
     const rows = await page.$$('[class*="rdt_TableRow"]');
 
     for (const row of rows) {
-      if (checkStop && checkStop()) break;
+      if (checkPauseStop) await checkPauseStop();
 
       const cells = await row.$$('[class*="rdt_TableCell"]');
       if (cells.length < 8) continue;
 
       const ref = ((await cells[0].textContent()) || '').trim();
-      if (!ref || !remaining.has(ref)) continue;
+      if (!ref) continue;
 
       const gonderilenSms = parseInt(((await cells[6].textContent()) || '0').trim()) || 0;
       const manuelLimit   = parseInt(((await cells[7].textContent()) || '0').trim()) || 0;
 
-      if (gonderilenSms >= manuelLimit && manuelLimit > 0) {
+      if (manuelLimit > 0 && gonderilenSms >= manuelLimit) {
         logger.warn('SMS limiti dolu: ' + ref + ' (' + gonderilenSms + '/' + manuelLimit + ')');
         skipped++;
-        remaining.delete(ref);
         if (onProgress) onProgress({ ref, status: 'limit', sent, skipped, failed, total });
         continue;
       }
 
-      // SMS butonunu tıkla
       const smsBtn = await row.$('.btn-primary, button:has-text("SMS Gönder")');
       if (!smsBtn) {
         logger.warn('SMS butonu yok: ' + ref);
         skipped++;
-        remaining.delete(ref);
         continue;
       }
 
       try {
-        // Response'u yakala
         const [response] = await Promise.all([
           page.waitForResponse(
             r => r.url().includes('reSendSms') || r.url().includes('sendSms'),
@@ -94,11 +149,10 @@ async function sendBulkSMS(page, targetRefs, onProgress, checkStop) {
           try {
             const json = await response.json();
             success = json.Success === true || json.success === true;
-            if (!success) logger.warn('SMS API yanıtı: ' + JSON.stringify(json));
+            if (!success) logger.warn('SMS API: ' + JSON.stringify(json));
           } catch { success = response.status() === 200; }
         } else {
-          // Response yakalanamadıysa butona tıklandı sayılır
-          success = true;
+          success = true; // Response yakalanamadı ama tıklandı
         }
 
         if (success) {
@@ -109,24 +163,23 @@ async function sendBulkSMS(page, targetRefs, onProgress, checkStop) {
           failed++;
           if (onProgress) onProgress({ ref, status: 'error', sent, skipped, failed, total });
         }
-        remaining.delete(ref);
 
-        // Kısa bekleme — portal rate limit önlemi
         await humanDelay(400, 700);
 
-      } catch (e) {
+      } catch(e) {
         logger.warn('SMS tıklama hatası ' + ref + ': ' + e.message);
         failed++;
-        remaining.delete(ref);
         if (onProgress) onProgress({ ref, status: 'error', error: e.message, sent, skipped, failed, total });
       }
     }
 
     if (pageNum >= totalPages) break;
 
-    // Sonraki sayfaya geç
-    prevFirstRef = rows[0] ? ((await rows[0].$eval('[class*="rdt_TableCell"]', el => el.textContent.trim()).catch(() => ''))) : null;
-    const clicked = await clickNext(page);
+    prevFirstRef = rows[0]
+      ? await rows[0].$eval('[class*="rdt_TableCell"]', el => el.textContent.trim()).catch(() => '')
+      : null;
+
+    const clicked = await _clickNext(page);
     if (!clicked) break;
 
     try {
@@ -145,7 +198,7 @@ async function sendBulkSMS(page, targetRefs, onProgress, checkStop) {
   }
 
   logger.info('SMS tamamlandı — gönderildi: ' + sent + ', atlandı: ' + skipped + ', hata: ' + failed);
-  return { sent, skipped, failed };
+  return { sent, skipped, failed, total };
 }
 
 async function setMaxRowsPerPage(page) {
@@ -167,34 +220,27 @@ async function setMaxRowsPerPage(page) {
   } catch(e) { logger.warn('setMaxRowsPerPage: ' + e.message); }
 }
 
-async function getTotalPages(page) {
+async function _getTotalPages(page) {
   try {
-    const text = await page.evaluate(() => {
-      const el = document.querySelector('[class*="rdt_Pagination"]');
-      return el ? el.innerText : '';
-    });
     const rowsPerPage = await page.evaluate(() => {
       const sel = document.querySelector('.rdt_Pagination select, select');
       return sel ? parseInt(sel.value) : 30;
     });
-    const m = text.match(/\d+-\d+\s+of\s+([\d,]+)/i);
-    if (m) {
-      const total = parseInt(m[1].replace(/,/g,''));
-      return Math.ceil(total / rowsPerPage);
-    }
+    const total = await _getTotalCount(page);
+    if (total && rowsPerPage) return Math.ceil(total / rowsPerPage);
   } catch(e) {}
   return 9999;
 }
 
-async function clickNext(page) {
+async function _clickNext(page) {
   try {
     const btns = await page.$$('[class*="rdt_Pagination"] button');
     const active = [];
     for (const b of btns) if (!(await b.isDisabled())) active.push(b);
-    if (active.length >= 2) { await active[active.length-2].click(); return true; }
+    if (active.length >= 2) { await active[active.length - 2].click(); return true; }
     if (active.length === 1) { await active[0].click(); return true; }
   } catch(e) {}
   return false;
 }
 
-module.exports = { sendBulkSMS };
+module.exports = { sendBulkSMS, applyPortalFilters };

@@ -1,6 +1,6 @@
 const { scrapeAllRecords } = require('./scraper');
-const { sendBulkSMS } = require('./sms-sender');
-const { getState, setState, getCount, queryRecords } = require('./db');
+const { sendBulkSMS, applyPortalFilters } = require('./sms-sender');
+const { getState, setState, getCount } = require('./db');
 const logger = require('./logger');
 
 class JobManager {
@@ -101,12 +101,18 @@ class JobManager {
     }
   }
 
-  // ─── SMS ─────────────────────────────────────────────────────────────────
+  // ─── SMS: Portal'dan say ──────────────────────────────────────────────────
   async countSMS(filters) {
-    const records = this._queryForSMS(filters);
-    return records.length;
+    if (this.currentJob) throw new Error('Zaten çalışıyor: ' + this.currentJob);
+    if (!this._page) throw new Error('Browser sayfası hazır değil');
+
+    logger.info('Portal filtre sayımı başladı...');
+    const count = await applyPortalFilters(this._page, filters || {});
+    this.bus.emit('sms:count', { count, source: 'portal' });
+    return count;
   }
 
+  // ─── SMS: Gönder ──────────────────────────────────────────────────────────
   async startSMS(filters) {
     if (this.currentJob) throw new Error('Zaten çalışıyor: ' + this.currentJob);
     if (!this._page) throw new Error('Browser sayfası hazır değil');
@@ -115,51 +121,45 @@ class JobManager {
     this._paused = false;
     this._stopped = false;
 
-    const records = this._queryForSMS(filters);
-    const totalCount = records.length;
     const startTime = Date.now();
-
-    // referansNo Set — sendBulkSMS bunu kullanır
-    const targetRefs = new Set(records.map(r => r.referansNo));
-
     this.bus.emit('status', { module: 'sms', state: 'running', startTime });
-    this.bus.emit('sms:start', { totalCount, filters });
-    logger.info('SMS gönderimi başladı: ' + totalCount + ' kayıt');
+    this.bus.emit('sms:start', { filters });
+    logger.info('SMS gönderimi başladı');
 
     try {
       const result = await sendBulkSMS(
         this._page,
-        targetRefs,
-        // onProgress callback — her SMS sonrası çağrılır
+        filters || {},
+        // onProgress
         (prog) => {
           const elapsed = Date.now() - startTime;
           const processed = prog.sent + prog.skipped + prog.failed;
           const rate = processed > 0 ? processed / (elapsed / 60000) : 0;
-          const eta = rate > 0 ? Math.round((totalCount - processed) / rate) : 0;
+          const eta  = rate > 0 ? Math.round((prog.total - processed) / rate) : 0;
 
-          // Bus event
-          this.bus.emit('sms:sent', {
-            ref: prog.ref, status: prog.status,
-            sent: prog.sent, skipped: prog.skipped, failed: prog.failed,
-          });
+          this.bus.emit('sms:sent', { ref: prog.ref, status: prog.status });
           this.bus.emit('sms:progress', {
-            processed, success: prog.sent, failed: prog.failed,
-            skipped: prog.skipped, totalCount,
-            percent: Math.round((processed / totalCount) * 100),
-            rate: Math.round(rate), eta,
+            processed,
+            success: prog.sent,
+            failed: prog.failed,
+            skipped: prog.skipped,
+            totalCount: prog.total,
+            percent: prog.total > 0 ? Math.round((processed / prog.total) * 100) : 0,
+            rate: Math.round(rate),
+            eta,
           });
-
-          // pause/stop kontrolü — sendBulkSMS checkStop ile ayrıca kontrol ediyor
         },
-        // checkStop callback
-        () => this._stopped
+        // checkPauseStop
+        () => this.checkPauseStop()
       );
 
       const duration = Date.now() - startTime;
       this.bus.emit('sms:done', {
         processed: result.sent + result.skipped + result.failed,
-        success: result.sent, failed: result.failed,
-        skipped: result.skipped, duration,
+        success: result.sent,
+        failed: result.failed,
+        skipped: result.skipped,
+        duration,
       });
       this.bus.emit('status', { module: 'sms', state: 'done' });
       logger.info('SMS tamamlandı: gönderildi=' + result.sent + ' atlandı=' + result.skipped + ' hata=' + result.failed);
@@ -176,24 +176,6 @@ class JobManager {
     } finally {
       this.currentJob = null;
     }
-  }
-
-  _queryForSMS(filters = {}) {
-    const { kayitStart, kayitEnd, sonStart, sonEnd, search } = filters;
-    const { db } = require('./db');
-    let sql = 'SELECT referansNo, isim, soyisim, gsm, plaka, kayitTarihi FROM records WHERE gsm IS NOT NULL AND gsm != ""';
-    const params = [];
-    if (kayitStart) { sql += ' AND kayitTarihi_iso >= ?'; params.push(kayitStart); }
-    if (kayitEnd)   { sql += ' AND kayitTarihi_iso <= ?'; params.push(kayitEnd); }
-    if (sonStart)   { sql += ' AND sonKullanimiIso >= ?'; params.push(sonStart); }
-    if (sonEnd)     { sql += ' AND sonKullanimiIso <= ?'; params.push(sonEnd); }
-    if (search) {
-      sql += ' AND (isim LIKE ? OR soyisim LIKE ? OR plaka LIKE ? OR gsm LIKE ? OR referansNo LIKE ?)';
-      const s = '%' + search + '%';
-      params.push(s, s, s, s, s);
-    }
-    sql += ' ORDER BY kayitTarihi_iso ASC';
-    return db.prepare(sql).all(...params);
   }
 }
 

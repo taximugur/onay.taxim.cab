@@ -15,22 +15,16 @@ function startDashboard(jobManager, eventBus, port) {
   app.use(express.static(path.join(__dirname, 'public')));
   app.use(express.json());
 
-  // Event bus → Socket.io
+  // Event bus → Socket.io forward
   const fwd = (event) => eventBus.on(event, (data) => io.emit(event, data));
-  ['scraper:page','scraper:done','scraper:error','sms:start','sms:progress','sms:sent','sms:done','sms:error','status'].forEach(fwd);
+  ['scraper:page','scraper:done','scraper:error',
+   'sms:count','sms:start','sms:progress','sms:sent','sms:done','sms:error',
+   'status'].forEach(fwd);
 
   // REST: state
   app.get('/api/state', (req, res) => {
     const s = getState();
     res.json({ ...s, dbCount: getCount(), currentJob: jobManager.currentJob, paused: jobManager._paused });
-  });
-
-  // REST: SMS count
-  app.post('/api/sms/count', (req, res) => {
-    try {
-      const count = jobManager._queryForSMS(req.body).length;
-      res.json({ count });
-    } catch(e) { res.status(500).json({ error: e.message }); }
   });
 
   // REST: Excel indir
@@ -68,23 +62,20 @@ function startDashboard(jobManager, eventBus, port) {
 
   // Socket.io commands
   io.on('connection', (socket) => {
-    // İlk bağlantıda state gönder
     const s = getState();
     socket.emit('init', { ...s, dbCount: getCount(), currentJob: jobManager.currentJob, paused: jobManager._paused });
 
-    socket.on('scraper:start', (opts) => {
-      jobManager.startScraper(opts && opts.fresh).catch(e => socket.emit('error', e.message));
-    });
+    socket.on('scraper:start',  (opts) => jobManager.startScraper(opts && opts.fresh).catch(e => socket.emit('error', e.message)));
     socket.on('scraper:pause',  () => jobManager.pause());
     socket.on('scraper:resume', () => jobManager.resume());
     socket.on('scraper:stop',   () => jobManager.stop());
 
-    socket.on('sms:count', (filters, cb) => {
-      try { cb({ count: jobManager._queryForSMS(filters).length }); } catch(e) { cb({ error: e.message }); }
+    // sms:count — portalda filtre uygular, sms:count event ile sonucu gönderir
+    socket.on('sms:count', (filters) => {
+      jobManager.countSMS(filters).catch(e => socket.emit('sms:count', { count: 0, error: e.message }));
     });
-    socket.on('sms:start', (filters) => {
-      jobManager.startSMS(filters).catch(e => socket.emit('error', e.message));
-    });
+
+    socket.on('sms:start',  (filters) => jobManager.startSMS(filters).catch(e => socket.emit('error', e.message)));
     socket.on('sms:pause',  () => jobManager.pause());
     socket.on('sms:resume', () => jobManager.resume());
     socket.on('sms:stop',   () => jobManager.stop());

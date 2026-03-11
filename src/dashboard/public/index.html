@@ -189,22 +189,17 @@ input:focus,textarea:focus{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(
       <input type="text" id="sms-search" placeholder="...">
 
       <div class="btn-row" style="margin-top:12px">
-        <button class="btn btn-blue" onclick="smsCount()">🔍 Filtrele ve Say</button>
+        <button class="btn btn-blue" id="btn-sms-count" onclick="smsCount()">🔍 Filtrele ve Say</button>
       </div>
 
       <div class="filter-result" id="sms-count-result"></div>
-
-      <div class="divider"></div>
-
-      <label class="field-label">SMS Mesajı</label>
-      <textarea id="sms-message" rows="3" style="resize:vertical;font-size:12px" placeholder="Boş bırakırsanız varsayılan mesaj kullanılır..."></textarea>
 
       <div class="sms-warn" id="sms-warn">
         <span>⚠️</span><span id="sms-warn-txt"></span>
       </div>
 
       <div class="btn-row" style="margin-top:10px">
-        <button class="btn btn-green" id="btn-sms-start" onclick="smsStart()" disabled>🚀 SMS Gönderimini Başlat</button>
+        <button class="btn btn-green" id="btn-sms-start" onclick="smsStart()">🚀 SMS Gönderimini Başlat</button>
       </div>
     </div>
 
@@ -246,7 +241,7 @@ input:focus,textarea:focus{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(
 const socket = io();
 let scraperState = 'idle', smsState = 'idle';
 let scStartTime = null, scTimer = null;
-let filteredCount = 0;
+let portalCount = 0;
 
 // ─── Tab switching ──────────────────────────────────────────────────────────
 function switchTab(tab) {
@@ -299,8 +294,27 @@ socket.on('scraper:done', (d) => {
 
 socket.on('scraper:error', (d) => addLog('sc-log', '✗ HATA: ' + d.error, 'err'));
 
+socket.on('sms:count', (d) => {
+  const btn = document.getElementById('btn-sms-count');
+  btn.disabled = false;
+  btn.textContent = '🔍 Filtrele ve Say';
+  if (d.error) { addLog('sms-log', '✗ Portal sayım hatası: ' + d.error, 'err'); return; }
+  portalCount = d.count;
+  const el = document.getElementById('sms-count-result');
+  el.textContent = '✓ Portal\'da ' + fmt(d.count) + ' kayıt bulundu';
+  el.classList.add('show');
+  const warn = document.getElementById('sms-warn');
+  if (d.count > 0) {
+    document.getElementById('sms-warn-txt').textContent = 'Filtreler uygulandı. SMS gönderimi başlatılabilir.';
+    warn.classList.add('show');
+  } else {
+    warn.classList.remove('show');
+  }
+  addLog('sms-log', '✓ Portal\'da ' + fmt(d.count) + ' kayıt bulundu', 'ok');
+});
+
 socket.on('sms:start', (d) => {
-  addLog('sms-log', `SMS gönderimi başladı: ${fmt(d.totalCount)} kayıt`, 'info');
+  addLog('sms-log', 'SMS gönderimi başladı, portal filtreleniyor...', 'info');
   document.getElementById('sms-processed').textContent = '0';
   document.getElementById('sms-success').textContent = '0';
   document.getElementById('sms-failed').textContent = '0';
@@ -316,12 +330,9 @@ socket.on('sms:progress', (d) => {
 });
 
 socket.on('sms:sent', (d) => {
-  const ok = d.status === 'ok';
-  const sim = d.simulated ? ' [SIM]' : '';
-  addLog('sms-log',
-    (ok ? '✓ ' : '✗ ') + d.referansNo + ' ' + (d.plaka||'') + ' → ' + d.gsm + sim,
-    ok ? (d.simulated ? 'sim' : 'ok') : 'err'
-  );
+  const icon = d.status === 'ok' ? '✓' : d.status === 'limit' ? '⏭' : '✗';
+  const cls  = d.status === 'ok' ? 'ok' : d.status === 'limit' ? 'warn' : 'err';
+  addLog('sms-log', icon + ' ' + (d.ref || '') + ' → ' + d.status, cls);
 });
 
 socket.on('sms:done', (d) => {
@@ -363,30 +374,21 @@ function updateScraperUI(state) {
 }
 
 // ─── SMS controls ────────────────────────────────────────────────────────────
-async function smsCount() {
-  const filters = getSmsFilters();
-  socket.emit('sms:count', filters, (res) => {
-    if (res.error) { alert(res.error); return; }
-    filteredCount = res.count;
-    const el = document.getElementById('sms-count-result');
-    el.textContent = '🔍 ' + fmt(res.count) + ' kayıt bulundu';
-    el.classList.add('show');
-    const warn = document.getElementById('sms-warn');
-    const warnTxt = document.getElementById('sms-warn-txt');
-    if (res.count > 0) {
-      warnTxt.textContent = fmt(res.count) + ' kayda SMS gönderilecek. Emin misiniz?';
-      warn.classList.add('show');
-      document.getElementById('btn-sms-start').disabled = false;
-    } else {
-      warn.classList.remove('show');
-      document.getElementById('btn-sms-start').disabled = true;
-    }
-  });
+function smsCount() {
+  const btn = document.getElementById('btn-sms-count');
+  btn.disabled = true;
+  btn.textContent = '⏳ Portalda aranıyor...';
+  document.getElementById('sms-count-result').classList.remove('show');
+  addLog('sms-log', 'Filtreler portal\'a uygulanıyor...', 'info');
+  socket.emit('sms:count', getSmsFilters());
 }
 
 function smsStart() {
-  if (!filteredCount || !confirm(fmt(filteredCount) + ' kayda SMS gönderilecek. Başlansın mı?')) return;
-  socket.emit('sms:start', { ...getSmsFilters(), message: document.getElementById('sms-message').value });
+  const msg = portalCount > 0
+    ? fmt(portalCount) + ' kayda SMS gönderilecek. Emin misiniz?'
+    : 'Filtrelere göre SMS gönderimi başlatılacak. Emin misiniz?';
+  if (!confirm(msg)) return;
+  socket.emit('sms:start', getSmsFilters());
 }
 
 function smsPauseResume() {
@@ -402,7 +404,8 @@ function updateSmsUI(state) {
   smsState = state;
   const active = state === 'running' || state === 'paused';
   setBadge('sms-badge', 'sms-statetxt', state);
-  document.getElementById('btn-sms-start').disabled = active || !filteredCount;
+  document.getElementById('btn-sms-start').disabled = active;
+  if (!active) document.getElementById('btn-sms-count').disabled = false;
   document.getElementById('btn-sms-pause').disabled = !active;
   document.getElementById('btn-sms-stop').disabled = !active;
   const pauseBtn = document.getElementById('btn-sms-pause');

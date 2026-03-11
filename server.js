@@ -1,0 +1,372 @@
+require('dotenv').config({ override: true });
+const express = require('express');
+const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const ExcelJS = require('exceljs');
+
+const app = express();
+const PORT = 8802;
+app.use(express.json());
+app.use('/data', express.static(path.join(__dirname, 'data')));
+
+let botProcess = null;
+let logBuffer = [];
+const sseClients = new Set();
+
+function broadcast(msg) {
+  const d = `data: ${JSON.stringify(msg)}\n\n`;
+  for (const r of sseClients) { try { r.write(d); } catch {} }
+}
+
+function addLog(line) {
+  logBuffer.push({ msg: line });
+  if (logBuffer.length > 2000) logBuffer.shift();
+  broadcast({ type: 'log', msg: line });
+}
+
+function getDB() {
+  try {
+    const Database = require('better-sqlite3');
+    return new Database(path.join(__dirname, 'data', 'extracard.db'));
+  } catch { return null; }
+}
+
+function getState() {
+  const db = getDB();
+  if (!db) return { status: 'idle', lastPage: 0, totalPages: 0, totalRecords: 0, lastRun: null };
+  try {
+    const s = db.prepare('SELECT * FROM scrape_state WHERE id=1').get() || {};
+    s.dbCount = db.prepare('SELECT COUNT(*) as n FROM records').get().n;
+    db.close();
+    return s;
+  } catch { db.close(); return { status: 'idle', lastPage: 0, totalPages: 0, dbCount: 0 }; }
+}
+
+// ─── Ana Panel ───────────────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  const s = getState();
+  res.send(`<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shell ExtraCard — Onay Paneli</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#222}
+header{background:#FFCC00;padding:14px 24px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+header h1{font-size:18px;font-weight:700}
+.wrap{max-width:1200px;margin:0 auto;padding:20px;display:grid;grid-template-columns:320px 1fr;gap:16px;align-items:start}
+.card{background:#fff;border-radius:12px;padding:18px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin-bottom:16px}
+h2{font-size:12px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px}
+label{display:block;font-size:12px;color:#666;margin:10px 0 3px}
+input{width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;outline:none}
+input:focus{border-color:#FFCC00;box-shadow:0 0 0 3px rgba(255,204,0,.2)}
+select{width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;background:#fff}
+.row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:8px 16px;border-radius:7px;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:all .15s}
+.y{background:#FFCC00;color:#1a1a1a}.y:hover{background:#e6b800}
+.r{background:#e53e3e;color:#fff}.r:hover{background:#c53030}
+.g{background:#38a169;color:#fff}.g:hover{background:#276749}
+.b{background:#3182ce;color:#fff}.b:hover{background:#2c5282}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:600}
+.idle{background:#e2e8f0;color:#4a5568}.running{background:#bee3f8;color:#2b6cb0}
+.done{background:#c6f6d5;color:#276749}.error{background:#fed7d7;color:#9b2c2c}
+.stopped{background:#fef3c7;color:#92400e}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.pulse{animation:pulse 1.2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.stat{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f5f5f5;font-size:13px}
+.stat:last-child{border-bottom:none}
+.sv{font-weight:600}
+progress{width:100%;height:6px;border-radius:3px;margin-top:8px}
+progress::-webkit-progress-bar{background:#e2e8f0;border-radius:3px}
+progress::-webkit-progress-value{background:#FFCC00;border-radius:3px}
+#log{background:#0d1117;color:#c9d1d9;font-family:'Menlo',monospace;font-size:11px;padding:14px;border-radius:8px;height:420px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.li{color:#79c0ff}.lw{color:#e3b341}.le{color:#f85149}.lo{color:#56d364}
+.sep{height:1px;background:#f0f0f0;margin:12px 0}
+.dl-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+</style>
+</head>
+<body>
+<header>
+  <svg width="30" height="30" viewBox="0 0 30 30"><circle cx="15" cy="15" r="15" fill="#DD1D21"/><text x="15" y="20" text-anchor="middle" fill="#FFCC00" font-size="13" font-weight="bold">S</text></svg>
+  <h1>Shell ExtraCard — Müşteri Onay Paneli</h1>
+  <span class="badge ${s.status||'idle'}" id="badge"><span class="dot ${s.status==='running'?'pulse':''}" id="dot"></span><span id="stxt">${{idle:'Hazır',running:'Çalışıyor',done:'Tamamlandı',error:'Hata',stopped:'Durduruldu'}[s.status]||'Hazır'}</span></span>
+</header>
+
+<div class="wrap">
+  <!-- SOL -->
+  <div>
+    <div class="card">
+      <h2>Bot Kontrolü</h2>
+      <label>Kullanıcı Adı</label>
+      <input id="uname" value="uakkus@bilisim-inovasyon.com.tr">
+      <label>Şifre</label>
+      <input type="password" id="pass" value="Shell2023!">
+      <div class="row">
+        <button class="btn y" id="btnStart" onclick="startBot(false)">▶ Devam</button>
+        <button class="btn b" id="btnFresh" onclick="startBot(true)">↺ Sıfırdan Tara</button>
+        <button class="btn r" id="btnStop" onclick="stopBot()" disabled>■ Durdur</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Durum</h2>
+      <div class="stat"><span>DB Kayıt</span><span class="sv" id="s-db">${(s.dbCount||0).toLocaleString('tr-TR')}</span></div>
+      <div class="stat"><span>Son Sayfa</span><span class="sv" id="s-page">${s.lastPage||0} / ${s.totalPages||0}</span></div>
+      <div class="stat"><span>Geçen Süre</span><span class="sv" id="s-time">—</span></div>
+      <div class="stat"><span>Son Çalışma</span><span class="sv" style="font-size:11px">${s.lastRun ? new Date(s.lastRun).toLocaleString('tr-TR') : '—'}</span></div>
+      <progress id="s-prog" value="${s.lastPage||0}" max="${s.totalPages||1}"></progress>
+    </div>
+
+    <div class="card">
+      <h2>Excel İndir</h2>
+      <label>Filtre Alanı</label>
+      <select id="fld">
+        <option value="kayit">Kayıt Tarihi</option>
+        <option value="son">Son Kullanım Tarihi</option>
+      </select>
+      <label>Başlangıç Tarihi</label>
+      <input type="date" id="dfrom">
+      <label>Bitiş Tarihi</label>
+      <input type="date" id="dto">
+      <div class="row">
+        <button class="btn g" onclick="downloadExcel()">⬇ Excel İndir</button>
+        <button class="btn b" onclick="downloadAll()">⬇ Tümünü İndir</button>
+      </div>
+      <div id="dl-status" style="font-size:12px;color:#666;margin-top:8px"></div>
+    </div>
+  </div>
+
+  <!-- SAĞ -->
+  <div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h2 style="margin:0">Canlı Log</h2>
+        <button class="btn" style="background:#eee;padding:4px 10px;font-size:11px" onclick="document.getElementById('log').innerHTML=''">Temizle</button>
+      </div>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let timer = null;
+let t0 = null;
+
+const es = new EventSource('/events');
+es.onmessage = e => {
+  const d = JSON.parse(e.data);
+  if (d.type==='log') appendLog(d.msg);
+  if (d.type==='status') setStatus(d);
+  if (d.type==='progress') setProgress(d);
+};
+
+function appendLog(msg) {
+  const b = document.getElementById('log');
+  const el = document.createElement('div');
+  let cls = 'li';
+  if (msg.includes('[ERROR]')||msg.includes('Fatal')) cls='le';
+  else if (msg.includes('[WARN]')) cls='lw';
+  else if (msg.includes('[OK]')||msg.includes('TAMAMLANDI')) cls='lo';
+  el.className = cls;
+  el.textContent = msg;
+  b.appendChild(el);
+  b.scrollTop = b.scrollHeight;
+}
+
+const LABELS = {idle:'Hazır',running:'Çalışıyor',done:'Tamamlandı',error:'Hata',stopped:'Durduruldu'};
+function setStatus(d) {
+  const badge = document.getElementById('badge');
+  const stxt = document.getElementById('stxt');
+  const dot = document.getElementById('dot');
+  badge.className = 'badge ' + d.status;
+  stxt.textContent = LABELS[d.status]||d.status;
+  dot.className = 'dot' + (d.status==='running'?' pulse':'');
+  document.getElementById('btnStart').disabled = d.status==='running';
+  document.getElementById('btnFresh').disabled = d.status==='running';
+  document.getElementById('btnStop').disabled = d.status!=='running';
+  if (d.status==='running' && !t0) { t0=Date.now(); timer=setInterval(()=>{ const s=Math.floor((Date.now()-t0)/1000); document.getElementById('s-time').textContent=Math.floor(s/60)+'dk '+s%60+'s'; },1000); }
+  if (d.status!=='running') { clearInterval(timer); timer=null; t0=null; }
+  if (d.dbCount !== undefined) document.getElementById('s-db').textContent = d.dbCount.toLocaleString('tr-TR');
+}
+
+function setProgress(d) {
+  document.getElementById('s-page').textContent = d.page+'/'+d.totalPages;
+  document.getElementById('s-prog').max = d.totalPages;
+  document.getElementById('s-prog').value = d.page;
+  if (d.dbCount !== undefined) document.getElementById('s-db').textContent = d.dbCount.toLocaleString('tr-TR');
+}
+
+async function startBot(fresh) {
+  if (fresh && !confirm('Sıfırdan tarama: mevcut ' + document.getElementById('s-db').textContent + ' kayıt korunur, sayfa sayacı sıfırlanır. Devam?')) return;
+  const body = { username: document.getElementById('uname').value, password: document.getElementById('pass').value, fresh: !!fresh };
+  await fetch('/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+}
+
+async function stopBot() {
+  await fetch('/stop', { method:'POST' });
+}
+
+async function downloadExcel() {
+  const from = document.getElementById('dfrom').value;
+  const to = document.getElementById('dto').value;
+  const fld = document.getElementById('fld').value;
+  if (!from && !to) { document.getElementById('dl-status').textContent='Lütfen en az bir tarih girin veya Tümünü İndir kullanın'; return; }
+  document.getElementById('dl-status').textContent = 'Hazırlanıyor...';
+  const params = new URLSearchParams({ field: fld });
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  window.location = '/excel?' + params.toString();
+  setTimeout(() => document.getElementById('dl-status').textContent = '', 3000);
+}
+
+async function downloadAll() {
+  document.getElementById('dl-status').textContent = 'Hazırlanıyor...';
+  window.location = '/excel';
+  setTimeout(() => document.getElementById('dl-status').textContent = '', 3000);
+}
+
+fetch('/logs').then(r=>r.json()).then(logs=>logs.forEach(l=>appendLog(l.msg)));
+fetch('/state').then(r=>r.json()).then(s=>setStatus({status:s.status||'idle',dbCount:s.dbCount||0}));
+</script>
+</body>
+</html>`);
+});
+
+app.get('/events', (req, res) => {
+  res.setHeader('Content-Type','text/event-stream');
+  res.setHeader('Cache-Control','no-cache');
+  res.setHeader('Connection','keep-alive');
+  res.flushHeaders();
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
+});
+
+app.get('/state', (req, res) => res.json(getState()));
+app.get('/logs', (req, res) => res.json(logBuffer));
+
+// ─── Bot Başlat ──────────────────────────────────────────────────────────────
+app.post('/start', (req, res) => {
+  if (botProcess) return res.json({ ok: false, msg: 'Zaten çalışıyor' });
+
+  const { username, password, fresh } = req.body;
+  if (fresh) {
+    try {
+      const Database = require('better-sqlite3');
+      const db2 = new Database(path.join(__dirname, 'data', 'extracard.db'));
+      db2.prepare("UPDATE scrape_state SET lastPage=0, totalPages=0, status='idle' WHERE id=1").run();
+      db2.close();
+      addLog('[INFO] Sayfa sayacı sıfırlandı — sıfırdan tarama başlıyor...');
+    } catch(e) { addLog('[WARN] Sıfırlama hatası: ' + e.message); }
+  }
+  const env_content = [
+    'LOGIN_URL=https://extracard.turkiyeshell.com',
+    `USERNAME=${username || ''}`,
+    `PASSWORD=${password || ''}`,
+    'HEADLESS=true',
+    'ROWS_PER_PAGE=30',
+    'DELAY_BETWEEN_PAGES_MS=200',
+    'MAX_RETRY=3',
+    'SESSION_CHECK_EVERY=50',
+  ].join('\n');
+  fs.writeFileSync(path.join(__dirname, '.env'), env_content);
+
+  logBuffer = [];
+  broadcast({ type: 'status', status: 'running', dbCount: getState().dbCount || 0 });
+
+  botProcess = spawn('node', ['index.js'], { cwd: __dirname, env: { ...process.env } });
+
+  botProcess.stdout.on('data', chunk => {
+    chunk.toString().split('\n').filter(Boolean).forEach(line => {
+      addLog(line);
+      const m = line.match(/Sayfa (\d+)\/(\d+).*DB toplam: ([\d,]+)/);
+      if (m) {
+        const db = parseInt(m[3].replace(/,/g,''));
+        broadcast({ type: 'progress', page: parseInt(m[1]), totalPages: parseInt(m[2]), dbCount: db });
+      }
+    });
+  });
+  botProcess.stderr.on('data', chunk => {
+    chunk.toString().split('\n').filter(Boolean).forEach(l => addLog('[ERR] '+l));
+  });
+  botProcess.on('close', code => {
+    botProcess = null;
+    const s = getState();
+    const status = code === 0 ? 'done' : (code === null ? 'stopped' : 'error');
+    broadcast({ type: 'status', status, dbCount: s.dbCount || 0 });
+    addLog('=== Bot sonlandi (exit:' + code + ') — DB: ' + (s.dbCount||0) + ' kayit ===');
+  });
+
+  res.json({ ok: true });
+});
+
+// ─── Bot Durdur ──────────────────────────────────────────────────────────────
+app.post('/stop', (req, res) => {
+  if (botProcess) botProcess.kill('SIGTERM');
+  res.json({ ok: true });
+});
+
+// ─── Excel İndir ─────────────────────────────────────────────────────────────
+app.get('/excel', async (req, res) => {
+  try {
+    const { from, to, field } = req.query;
+    const db = getDB();
+    if (!db) return res.status(500).send('DB bulunamadi');
+
+    let sql = 'SELECT referansNo,isim,soyisim,kartNo,gsm,plaka,gonderilenSms,manuelSmsLimiti,kayitTarihi,sonKullanimTarihi FROM records';
+    const params = {};
+    const conds = [];
+    if (from || to) {
+      const col = field === 'son' ? 'sonKullanimiIso' : 'kayitTarihi_iso';
+      if (from) { conds.push(`${col} >= @from`); params.from = from; }
+      if (to)   { conds.push(`${col} <= @to`);   params.to = to; }
+    }
+    if (conds.length) sql += ' WHERE ' + conds.join(' AND ');
+    sql += ' ORDER BY kayitTarihi_iso ASC, referansNo ASC';
+
+    const records = db.prepare(sql).all(params);
+    db.close();
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Shell ExtraCard Bot';
+    const sheet = wb.addWorksheet('Müşteri Onayı Bekleyen');
+    sheet.columns = [
+      { header:'Referans No',  key:'referansNo',       width:15 },
+      { header:'İsim',         key:'isim',             width:15 },
+      { header:'Soyisim',      key:'soyisim',          width:15 },
+      { header:'Kart No',      key:'kartNo',           width:22 },
+      { header:'GSM',          key:'gsm',              width:15 },
+      { header:'Plaka',        key:'plaka',            width:12 },
+      { header:'Gönderilen SMS',key:'gonderilenSms',   width:15 },
+      { header:'Manuel SMS Limiti',key:'manuelSmsLimiti',width:18},
+      { header:'Kayıt Tarihi', key:'kayitTarihi',      width:20 },
+      { header:'Son Kullanım', key:'sonKullanimTarihi',width:20 },
+    ];
+    const hdr = sheet.getRow(1);
+    hdr.font = { bold: true };
+    hdr.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFCC00' } };
+    hdr.alignment = { vertical:'middle', horizontal:'center' };
+    records.forEach((r, i) => {
+      const row = sheet.addRow(r);
+      if (i % 2 === 1) row.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFF5F5F5' } };
+    });
+    sheet.autoFilter = { from:'A1', to:`J${records.length+1}` };
+    sheet.views = [{ state:'frozen', ySplit:1 }];
+
+    const ts = new Date().toISOString().slice(0,10);
+    const label = (from||to) ? `_${from||''}_${to||''}` : '_tumu';
+    const filename = `shell-extracard${label}_${ts}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch(e) {
+    res.status(500).send('Hata: ' + e.message);
+  }
+});
+
+app.listen(PORT, '127.0.0.1', () => console.log('Panel: http://127.0.0.1:' + PORT));

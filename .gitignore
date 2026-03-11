@@ -1,0 +1,7 @@
+node_modules/
+data/
+logs/
+screenshots/
+.env
+.env2
+src/scraper-reverse.js

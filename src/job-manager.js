@@ -137,7 +137,15 @@ class JobManager {
           const rate = processed > 0 ? processed / (elapsed / 60000) : 0;
           const eta  = rate > 0 ? Math.round((prog.total - processed) / rate) : 0;
 
-          this.bus.emit('sms:sent', { ref: prog.ref, status: prog.status });
+          this.bus.emit('sms:sent', {
+            ref: prog.ref,
+            status: prog.status,
+            processed,
+            totalCount: prog.total,
+            gonderilenSms: prog.gonderilenSms,
+            manuelLimit: prog.manuelLimit,
+            error: prog.error,
+          });
           this.bus.emit('sms:progress', {
             processed,
             success: prog.sent,

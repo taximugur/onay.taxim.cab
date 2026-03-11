@@ -314,12 +314,20 @@ socket.on('sms:count', (d) => {
 });
 
 socket.on('sms:start', (d) => {
-  addLog('sms-log', 'SMS gönderimi başladı, portal filtreleniyor...', 'info');
+  _smsFirstProgress = true;
   document.getElementById('sms-processed').textContent = '0';
   document.getElementById('sms-success').textContent = '0';
   document.getElementById('sms-failed').textContent = '0';
+  const f = d.filters || {};
+  const dateInfo = (f.kayitStart && f.kayitEnd)
+    ? f.kayitStart.split('-').reverse().join('.') + ' → ' + f.kayitEnd.split('-').reverse().join('.')
+    : (f.kayitStart || f.kayitEnd ? (f.kayitStart || f.kayitEnd) : '');
+  const searchInfo = f.search ? ' | arama: "' + f.search + '"' : '';
+  addLog('sms-log', '▶ Gönderim başladı' + (dateInfo ? ' — ' + dateInfo : '') + searchInfo, 'info');
+  addLog('sms-log', '⏳ Portal filtreleniyor, sayfa hazırlanıyor...', 'info');
 });
 
+let _smsFirstProgress = true;
 socket.on('sms:progress', (d) => {
   document.getElementById('sms-processed').textContent = fmt(d.processed);
   document.getElementById('sms-success').textContent = fmt(d.success);
@@ -327,16 +335,37 @@ socket.on('sms:progress', (d) => {
   document.getElementById('sms-pct').textContent = d.percent + '%';
   document.getElementById('sms-bar').style.width = d.percent + '%';
   document.getElementById('sms-rate-eta').textContent = `${d.rate}/dk — ETA: ${d.eta}dk`;
+  if (_smsFirstProgress && d.totalCount > 0) {
+    _smsFirstProgress = false;
+    addLog('sms-log', '✓ Portal\'da ' + fmt(d.totalCount) + ' kayıt — tıklama başlıyor', 'ok');
+  }
 });
 
 socket.on('sms:sent', (d) => {
-  const icon = d.status === 'ok' ? '✓' : d.status === 'limit' ? '⏭' : '✗';
-  const cls  = d.status === 'ok' ? 'ok' : d.status === 'limit' ? 'warn' : 'err';
-  addLog('sms-log', icon + ' ' + (d.ref || '') + ' → ' + d.status, cls);
+  const pos = (d.processed && d.totalCount) ? `[${fmt(d.processed)}/${fmt(d.totalCount)}] ` : '';
+  let msg, cls;
+  if (d.status === 'ok') {
+    msg = `✓ ${pos}${d.ref} — gönderildi`;
+    cls = 'ok';
+  } else if (d.status === 'limit') {
+    msg = `⏭ ${pos}${d.ref} — limit dolu (${d.gonderilenSms}/${d.manuelLimit})`;
+    cls = 'warn';
+  } else {
+    msg = `✗ ${pos}${d.ref} — hata${d.error ? ': ' + d.error : ''}`;
+    cls = 'err';
+  }
+  addLog('sms-log', msg, cls);
 });
 
 socket.on('sms:done', (d) => {
-  addLog('sms-log', `✓ TAMAMLANDI — ${fmt(d.success)} başarılı / ${fmt(d.failed)} hata`, 'ok');
+  _smsFirstProgress = true;
+  if (d.stopped) {
+    addLog('sms-log', `■ DURDURULDU — ${fmt(d.success||0)} gönderildi / ${fmt(d.skipped||0)} atlandı / ${fmt(d.failed||0)} hata`, 'warn');
+  } else {
+    const secs = d.duration ? Math.round(d.duration / 1000) : 0;
+    const timeStr = secs >= 60 ? Math.floor(secs/60) + 'dk ' + (secs%60) + 's' : secs + 's';
+    addLog('sms-log', `✓ TAMAMLANDI (${timeStr}) — ✓ ${fmt(d.success||0)} gönderildi · ⏭ ${fmt(d.skipped||0)} atlandı · ✗ ${fmt(d.failed||0)} hata`, 'ok');
+  }
 });
 
 socket.on('sms:error', (d) => addLog('sms-log', '✗ HATA: ' + d.error, 'err'));

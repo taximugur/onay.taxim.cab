@@ -312,7 +312,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       if (manuelLimit > 0 && gonderilenSms >= manuelLimit) {
         logger.warn('SMS limiti dolu: ' + ref + ' (' + gonderilenSms + '/' + manuelLimit + ')');
         skipped++;
-        if (onProgress) onProgress({ ref, status: 'limit', sent, skipped, failed, total });
+        if (onProgress) onProgress({ ref, status: 'limit', gonderilenSms, manuelLimit, sent, skipped, failed, total });
         continue;
       }
 

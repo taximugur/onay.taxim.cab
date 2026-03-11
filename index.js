@@ -1,45 +1,54 @@
 require('dotenv').config({ override: true });
-const fs = require('fs');
-['data','logs','screenshots'].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d,{recursive:true}); });
-
-const { launchBrowser, closeBrowser, getPage } = require('./src/browser');
+const { chromium } = require('playwright');
 const { login } = require('./src/auth');
-const { scrapeAllRecords } = require('./src/scraper');
-const { setState, getCount } = require('./src/db');
+const config = require('./src/config');
 const logger = require('./src/logger');
-
-process.on('SIGTERM', async () => {
-  logger.warn('SIGTERM alindi, durduruluyor...');
-  setState({ status: 'stopped' });
-  await closeBrowser().catch(() => {});
-  process.exit(0);
-});
+const eventBus = require('./src/events');
+const JobManager = require('./src/job-manager');
+const { startDashboard } = require('./src/dashboard/server');
 
 async function main() {
-  const t0 = Date.now();
-  logger.info('=== Shell ExtraCard Scraper baslatiliyor ===');
+  logger.info('=== Shell ExtraCard Bot başlatılıyor ===');
 
-  const config = require('./src/config');
-  if (!config.USERNAME || !config.PASSWORD) {
-    logger.error('USERNAME / PASSWORD eksik'); process.exit(1);
-  }
+  // Browser başlat
+  const browser = await chromium.launch({ headless: config.HEADLESS !== false });
+  const context = await browser.newContext({
+    locale: 'tr-TR',
+    timezoneId: 'Europe/Istanbul',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  });
+  await context.addInitScript(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
+  const page = await context.newPage();
 
-  try {
-    await launchBrowser();
-    const page = await getPage();
-    await login(page);
+  // Login
+  await login(page);
 
-    await scrapeAllRecords(page, ({ page: p, totalPages, inserted, pageSize }) => {
-      logger.info('Sayfa ' + p + '/' + totalPages + ' -- +' + inserted + ' yeni -- DB toplam: ' + getCount());
-    });
+  // Job manager
+  const jobManager = new JobManager(eventBus);
+  jobManager.setPage(page);
 
-    const dur = ((Date.now()-t0)/1000/60).toFixed(1);
-    logger.info('=== TAMAMLANDI: DB kayit: ' + getCount() + ' (' + dur + ' dk) ===');
-  } catch(e) {
-    logger.error('Fatal: ' + e.message);
-    setState({ status: 'error' });
-  } finally {
-    await closeBrowser().catch(() => {});
-  }
+  // Dashboard başlat
+  const port = parseInt(process.env.DASHBOARD_PORT) || 3333;
+  startDashboard(jobManager, eventBus, port);
+  logger.info('Dashboard hazır → http://localhost:' + port);
+
+  // Kapanış
+  process.on('SIGTERM', async () => {
+    logger.info('Bot kapatılıyor (SIGTERM)...');
+    jobManager.stop();
+    await browser.close();
+    process.exit(0);
+  });
+
+  process.on('SIGINT', async () => {
+    logger.info('Bot kapatılıyor (SIGINT)...');
+    jobManager.stop();
+    await browser.close();
+    process.exit(0);
+  });
 }
-main();
+
+main().catch(err => {
+  console.error('Fatal:', err.message);
+  process.exit(1);
+});

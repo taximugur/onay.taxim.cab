@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shell ExtraCard Bot</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--yellow:#FBCE07;--dark:#1a1a1a;--gray:#f4f5f7;--card:#fff;--border:#e2e6ea;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--orange:#f97316}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--gray);color:var(--dark);min-height:100vh}
+
+/* Header */
+header{background:var(--yellow);padding:0 24px;display:flex;align-items:center;gap:12px;height:56px;box-shadow:0 2px 8px rgba(0,0,0,.12);position:sticky;top:0;z-index:100}
+header .logo{font-size:22px}
+header h1{font-size:16px;font-weight:700;flex:1}
+.header-badge{display:flex;align-items:center;gap:6px;background:rgba(0,0,0,.1);padding:5px 12px;border-radius:20px;font-size:12px;font-weight:600}
+
+/* Tabs */
+.tabs{background:#fff;border-bottom:2px solid var(--border);display:flex;padding:0 24px;gap:4px}
+.tab{padding:14px 20px;cursor:pointer;font-size:14px;font-weight:600;color:#666;border-bottom:3px solid transparent;margin-bottom:-2px;transition:all .15s;user-select:none}
+.tab:hover{color:var(--dark)}
+.tab.active{color:var(--dark);border-bottom-color:var(--yellow)}
+
+/* Layout */
+.page{display:none;max-width:1100px;margin:0 auto;padding:20px;gap:16px}
+.page.active{display:grid}
+.page.two-col{grid-template-columns:340px 1fr}
+.page.one-col{grid-template-columns:1fr}
+@media(max-width:768px){.page.two-col{grid-template-columns:1fr}}
+
+/* Cards */
+.card{background:var(--card);border-radius:12px;padding:18px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.card-title{font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px}
+
+/* Stats */
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px}
+.stat-box{background:var(--gray);border-radius:8px;padding:10px 12px}
+.stat-box .val{font-size:22px;font-weight:700}
+.stat-box .lbl{font-size:11px;color:#888;margin-top:2px}
+.stat-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:13px}
+.stat-row:last-child{border:none}
+.stat-row .v{font-weight:600}
+
+/* Progress */
+.progress-wrap{margin:12px 0}
+.progress-bar-bg{background:#e2e6ea;border-radius:6px;height:10px;overflow:hidden}
+.progress-bar{height:100%;background:linear-gradient(90deg,var(--yellow),#f0b800);border-radius:6px;transition:width .4s ease;min-width:4px}
+.progress-info{display:flex;justify-content:space-between;font-size:12px;color:#666;margin-top:5px}
+
+/* Buttons */
+.btn-row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:8px 18px;border-radius:7px;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:all .15s;white-space:nowrap}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn-green{background:var(--green);color:#fff}.btn-green:hover:not(:disabled){background:#16a34a}
+.btn-yellow{background:var(--yellow);color:var(--dark)}.btn-yellow:hover:not(:disabled){background:#e6bc00}
+.btn-red{background:var(--red);color:#fff}.btn-red:hover:not(:disabled){background:#dc2626}
+.btn-blue{background:var(--blue);color:#fff}.btn-blue:hover:not(:disabled){background:#2563eb}
+.btn-gray{background:#e2e6ea;color:#444}.btn-gray:hover:not(:disabled){background:#d1d5db}
+
+/* Status badge */
+.status-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%}
+.s-idle .dot{background:#9ca3af}.s-idle{background:#f3f4f6;color:#6b7280}
+.s-running .dot{background:var(--green);animation:pulse 1s infinite}.s-running{background:#dcfce7;color:#15803d}
+.s-paused .dot{background:var(--orange)}.s-paused{background:#fff7ed;color:#c2410c}
+.s-done .dot{background:var(--blue)}.s-done{background:#dbeafe;color:#1d4ed8}
+.s-error .dot{background:var(--red)}.s-error{background:#fee2e2;color:#b91c1c}
+.s-stopped .dot{background:#f59e0b}.s-stopped{background:#fef3c7;color:#92400e}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* Log */
+.log-box{background:#0d1117;border-radius:8px;padding:12px;height:320px;overflow-y:auto;font-family:'Menlo','Consolas',monospace;font-size:11px;line-height:1.7}
+.log-entry{padding:1px 0;border-bottom:1px solid #1e293b}
+.log-entry:last-child{border:none}
+.log-ok{color:#4ade80}.log-err{color:#f87171}.log-warn{color:#fbbf24}.log-info{color:#93c5fd}.log-sim{color:#a78bfa}
+
+/* Forms */
+label.field-label{display:block;font-size:12px;color:#666;margin:10px 0 3px}
+input[type="date"],input[type="text"],textarea{width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:13px;outline:none;transition:border .15s}
+input:focus,textarea:focus{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(251,206,7,.2)}
+.filter-result{background:#f0fdf4;border:1px solid #86efac;border-radius:7px;padding:10px 14px;font-size:13px;margin:10px 0;display:none}
+.filter-result.show{display:block}
+.sms-warn{background:#fff7ed;border:1px solid var(--orange);border-radius:8px;padding:12px;font-size:13px;margin:10px 0;display:none}
+.sms-warn.show{display:flex;gap:8px;align-items:center}
+
+/* SMS stats */
+.sms-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:10px 0}
+.sms-stat{background:var(--gray);border-radius:8px;padding:8px 12px;text-align:center}
+.sms-stat .n{font-size:20px;font-weight:700}
+.sms-stat .l{font-size:11px;color:#888}
+
+/* Misc */
+.divider{height:1px;background:var(--border);margin:14px 0}
+.right-col{display:flex;flex-direction:column;gap:16px}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">🐚</span>
+  <h1>Shell ExtraCard Bot</h1>
+  <span class="header-badge" id="hdr-badge">
+    <span class="dot" id="hdr-dot" style="background:#9ca3af"></span>
+    <span id="hdr-txt">Bağlanıyor...</span>
+  </span>
+</header>
+
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('scraper')">📥 Scraper</div>
+  <div class="tab" onclick="switchTab('sms')">📨 SMS Gönder</div>
+</div>
+
+<!-- ═══════ SCRAPER TAB ═══════ -->
+<div class="page two-col active" id="tab-scraper">
+
+  <!-- Sol kolon -->
+  <div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">Durum</div>
+      <div style="margin-bottom:12px">
+        <span class="status-badge s-idle" id="sc-badge"><span class="dot"></span><span id="sc-statetxt">Hazır</span></span>
+      </div>
+      <div class="stat-grid">
+        <div class="stat-box"><div class="val" id="sc-dbcount">—</div><div class="lbl">DB Kayıt</div></div>
+        <div class="stat-box"><div class="val" id="sc-pages">—</div><div class="lbl">Sayfa</div></div>
+        <div class="stat-box"><div class="val" id="sc-elapsed">—</div><div class="lbl">Süre</div></div>
+        <div class="stat-box"><div class="val" id="sc-eta">—</div><div class="lbl">ETA</div></div>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-bar-bg"><div class="progress-bar" id="sc-bar" style="width:0%"></div></div>
+        <div class="progress-info"><span id="sc-pct">0%</span><span id="sc-rate">—</span></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-green" id="btn-sc-start" onclick="scraperStart(false)">▶ Başlat</button>
+        <button class="btn btn-blue" id="btn-sc-fresh" onclick="scraperStart(true)">↺ Sıfırdan</button>
+        <button class="btn btn-yellow" id="btn-sc-pause" onclick="scraperPauseResume()" disabled>⏸ Duraklat</button>
+        <button class="btn btn-red" id="btn-sc-stop" onclick="scraperStop()" disabled>⏹ Durdur</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Excel İndir</div>
+      <label class="field-label">Başlangıç</label>
+      <input type="date" id="xl-from">
+      <label class="field-label">Bitiş</label>
+      <input type="date" id="xl-to">
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn btn-green" onclick="dlExcel(false)">⬇ Filtreli İndir</button>
+        <button class="btn btn-gray" onclick="dlExcel(true)">⬇ Tümünü İndir</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sağ kolon -->
+  <div class="right-col">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="card-title" style="margin:0">Canlı Log</div>
+        <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="clearLog('sc-log')">Temizle</button>
+      </div>
+      <div class="log-box" id="sc-log"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ SMS TAB ═══════ -->
+<div class="page two-col" id="tab-sms">
+
+  <!-- Sol kolon -->
+  <div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">Filtreler</div>
+
+      <label class="field-label">Kayıt Tarihi — Başlangıç</label>
+      <input type="date" id="sms-kayit-start">
+      <label class="field-label">Kayıt Tarihi — Bitiş</label>
+      <input type="date" id="sms-kayit-end">
+
+      <div class="divider"></div>
+
+      <label class="field-label">Son Kullanım — Başlangıç</label>
+      <input type="date" id="sms-son-start">
+      <label class="field-label">Son Kullanım — Bitiş</label>
+      <input type="date" id="sms-son-end">
+
+      <div class="divider"></div>
+
+      <label class="field-label">Arama (isim, plaka, GSM, referans)</label>
+      <input type="text" id="sms-search" placeholder="...">
+
+      <div class="btn-row" style="margin-top:12px">
+        <button class="btn btn-blue" onclick="smsCount()">🔍 Filtrele ve Say</button>
+      </div>
+
+      <div class="filter-result" id="sms-count-result"></div>
+
+      <div class="divider"></div>
+
+      <label class="field-label">SMS Mesajı</label>
+      <textarea id="sms-message" rows="3" style="resize:vertical;font-size:12px" placeholder="Boş bırakırsanız varsayılan mesaj kullanılır..."></textarea>
+
+      <div class="sms-warn" id="sms-warn">
+        <span>⚠️</span><span id="sms-warn-txt"></span>
+      </div>
+
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn btn-green" id="btn-sms-start" onclick="smsStart()" disabled>🚀 SMS Gönderimini Başlat</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Durum</div>
+      <span class="status-badge s-idle" id="sms-badge"><span class="dot"></span><span id="sms-statetxt">Hazır</span></span>
+
+      <div class="sms-stats" style="margin-top:12px">
+        <div class="sms-stat"><div class="n" id="sms-processed">0</div><div class="l">İşlenen</div></div>
+        <div class="sms-stat"><div class="n" id="sms-success" style="color:var(--green)">0</div><div class="l">Başarılı</div></div>
+        <div class="sms-stat"><div class="n" id="sms-failed" style="color:var(--red)">0</div><div class="l">Hata</div></div>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-bar-bg"><div class="progress-bar" id="sms-bar" style="width:0%;background:linear-gradient(90deg,var(--green),#16a34a)"></div></div>
+        <div class="progress-info"><span id="sms-pct">0%</span><span id="sms-rate-eta">—</span></div>
+      </div>
+
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn btn-yellow" id="btn-sms-pause" onclick="smsPauseResume()" disabled>⏸ Duraklat</button>
+        <button class="btn btn-red" id="btn-sms-stop" onclick="smsStop()" disabled>⏹ Durdur</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sağ kolon -->
+  <div class="right-col">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="card-title" style="margin:0">Gönderim Logu</div>
+        <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="clearLog('sms-log')">Temizle</button>
+      </div>
+      <div class="log-box" id="sms-log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const socket = io();
+let scraperState = 'idle', smsState = 'idle';
+let scStartTime = null, scTimer = null;
+let filteredCount = 0;
+
+// ─── Tab switching ──────────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['scraper','sms'][i] === tab));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+}
+
+// ─── Socket events ──────────────────────────────────────────────────────────
+socket.on('connect', () => updateHeader('connected', '#22c55e'));
+socket.on('disconnect', () => updateHeader('Bağlantı kesildi', '#ef4444'));
+
+socket.on('init', (data) => {
+  updateScraperUI(data.currentJob === 'scraper' ? 'running' : (data.status || 'idle'));
+  updateSmsUI(data.currentJob === 'sms' ? 'running' : 'idle');
+  if (data.dbCount !== undefined) document.getElementById('sc-dbcount').textContent = fmt(data.dbCount);
+  if (data.lastPage && data.totalPages) document.getElementById('sc-pages').textContent = data.lastPage + '/' + data.totalPages;
+  if (data.startTime) { scStartTime = data.startTime; startScTimer(); }
+});
+
+socket.on('status', (data) => {
+  if (data.module === 'scraper') {
+    updateScraperUI(data.state);
+    if (data.startTime) { scStartTime = data.startTime; startScTimer(); }
+    if (data.state !== 'running' && data.state !== 'paused') { clearInterval(scTimer); scTimer = null; }
+  }
+  if (data.module === 'sms') updateSmsUI(data.state);
+});
+
+socket.on('scraper:page', (d) => {
+  document.getElementById('sc-dbcount').textContent = fmt(d.dbCount);
+  document.getElementById('sc-pages').textContent = d.page + '/' + d.totalPages;
+  document.getElementById('sc-pct').textContent = d.percent + '%';
+  document.getElementById('sc-bar').style.width = d.percent + '%';
+  const elapsed = d.elapsed / 1000;
+  const rate = elapsed > 0 ? (d.page / (elapsed / 60)).toFixed(1) : '—';
+  const etaMin = parseFloat(rate) > 0 ? Math.round((d.totalPages - d.page) / parseFloat(rate)) : '—';
+  document.getElementById('sc-rate').textContent = rate + ' sayfa/dk';
+  document.getElementById('sc-eta').textContent = etaMin !== '—' ? etaMin + ' dk' : '—';
+  const sign = d.inserted > 0 ? '+' : '';
+  addLog('sc-log', `Sayfa ${d.page}/${d.totalPages} — ${sign}${d.inserted} yeni — DB: ${fmt(d.dbCount)}`, d.inserted > 0 ? 'ok' : 'info');
+});
+
+socket.on('scraper:done', (d) => {
+  addLog('sc-log', `✓ TAMAMLANDI — DB: ${fmt(d.dbCount)} kayıt (${Math.round(d.duration/1000)}s)`, 'ok');
+  document.getElementById('sc-dbcount').textContent = fmt(d.dbCount);
+  document.getElementById('sc-pct').textContent = '100%';
+  document.getElementById('sc-bar').style.width = '100%';
+});
+
+socket.on('scraper:error', (d) => addLog('sc-log', '✗ HATA: ' + d.error, 'err'));
+
+socket.on('sms:start', (d) => {
+  addLog('sms-log', `SMS gönderimi başladı: ${fmt(d.totalCount)} kayıt`, 'info');
+  document.getElementById('sms-processed').textContent = '0';
+  document.getElementById('sms-success').textContent = '0';
+  document.getElementById('sms-failed').textContent = '0';
+});
+
+socket.on('sms:progress', (d) => {
+  document.getElementById('sms-processed').textContent = fmt(d.processed);
+  document.getElementById('sms-success').textContent = fmt(d.success);
+  document.getElementById('sms-failed').textContent = fmt(d.failed);
+  document.getElementById('sms-pct').textContent = d.percent + '%';
+  document.getElementById('sms-bar').style.width = d.percent + '%';
+  document.getElementById('sms-rate-eta').textContent = `${d.rate}/dk — ETA: ${d.eta}dk`;
+});
+
+socket.on('sms:sent', (d) => {
+  const ok = d.status === 'ok';
+  const sim = d.simulated ? ' [SIM]' : '';
+  addLog('sms-log',
+    (ok ? '✓ ' : '✗ ') + d.referansNo + ' ' + (d.plaka||'') + ' → ' + d.gsm + sim,
+    ok ? (d.simulated ? 'sim' : 'ok') : 'err'
+  );
+});
+
+socket.on('sms:done', (d) => {
+  addLog('sms-log', `✓ TAMAMLANDI — ${fmt(d.success)} başarılı / ${fmt(d.failed)} hata`, 'ok');
+});
+
+socket.on('sms:error', (d) => addLog('sms-log', '✗ HATA: ' + d.error, 'err'));
+
+// ─── Scraper controls ────────────────────────────────────────────────────────
+function scraperStart(fresh) {
+  if (fresh && !confirm('Sıfırdan tarama: sayaç sıfırlanır, DB korunur. Devam?')) return;
+  socket.emit('scraper:start', { fresh });
+}
+
+function scraperPauseResume() {
+  const btn = document.getElementById('btn-sc-pause');
+  if (scraperState === 'paused') { socket.emit('scraper:resume'); }
+  else { socket.emit('scraper:pause'); }
+}
+
+function scraperStop() {
+  if (confirm('Scraper durdurulsun mu?')) socket.emit('scraper:stop');
+}
+
+function updateScraperUI(state) {
+  scraperState = state;
+  const running = state === 'running';
+  const paused = state === 'paused';
+  const active = running || paused;
+  setBadge('sc-badge', 'sc-statetxt', state);
+  document.getElementById('btn-sc-start').disabled = active;
+  document.getElementById('btn-sc-fresh').disabled = active;
+  document.getElementById('btn-sc-pause').disabled = !active;
+  document.getElementById('btn-sc-stop').disabled = !active;
+  const pauseBtn = document.getElementById('btn-sc-pause');
+  pauseBtn.textContent = paused ? '▶ Devam' : '⏸ Duraklat';
+  pauseBtn.className = 'btn ' + (paused ? 'btn-green' : 'btn-yellow');
+  if (!active) { clearInterval(scTimer); scTimer = null; }
+}
+
+// ─── SMS controls ────────────────────────────────────────────────────────────
+async function smsCount() {
+  const filters = getSmsFilters();
+  socket.emit('sms:count', filters, (res) => {
+    if (res.error) { alert(res.error); return; }
+    filteredCount = res.count;
+    const el = document.getElementById('sms-count-result');
+    el.textContent = '🔍 ' + fmt(res.count) + ' kayıt bulundu';
+    el.classList.add('show');
+    const warn = document.getElementById('sms-warn');
+    const warnTxt = document.getElementById('sms-warn-txt');
+    if (res.count > 0) {
+      warnTxt.textContent = fmt(res.count) + ' kayda SMS gönderilecek. Emin misiniz?';
+      warn.classList.add('show');
+      document.getElementById('btn-sms-start').disabled = false;
+    } else {
+      warn.classList.remove('show');
+      document.getElementById('btn-sms-start').disabled = true;
+    }
+  });
+}
+
+function smsStart() {
+  if (!filteredCount || !confirm(fmt(filteredCount) + ' kayda SMS gönderilecek. Başlansın mı?')) return;
+  socket.emit('sms:start', { ...getSmsFilters(), message: document.getElementById('sms-message').value });
+}
+
+function smsPauseResume() {
+  if (smsState === 'paused') socket.emit('sms:resume');
+  else socket.emit('sms:pause');
+}
+
+function smsStop() {
+  if (confirm('SMS gönderimi durdurulsun mu?')) socket.emit('sms:stop');
+}
+
+function updateSmsUI(state) {
+  smsState = state;
+  const active = state === 'running' || state === 'paused';
+  setBadge('sms-badge', 'sms-statetxt', state);
+  document.getElementById('btn-sms-start').disabled = active || !filteredCount;
+  document.getElementById('btn-sms-pause').disabled = !active;
+  document.getElementById('btn-sms-stop').disabled = !active;
+  const pauseBtn = document.getElementById('btn-sms-pause');
+  pauseBtn.textContent = state === 'paused' ? '▶ Devam' : '⏸ Duraklat';
+  pauseBtn.className = 'btn ' + (state === 'paused' ? 'btn-green' : 'btn-yellow');
+}
+
+function getSmsFilters() {
+  return {
+    kayitStart: document.getElementById('sms-kayit-start').value,
+    kayitEnd:   document.getElementById('sms-kayit-end').value,
+    sonStart:   document.getElementById('sms-son-start').value,
+    sonEnd:     document.getElementById('sms-son-end').value,
+    search:     document.getElementById('sms-search').value,
+  };
+}
+
+// ─── Excel ───────────────────────────────────────────────────────────────────
+function dlExcel(all) {
+  const from = document.getElementById('xl-from').value;
+  const to   = document.getElementById('xl-to').value;
+  if (!all && !from && !to) { alert('En az bir tarih girin'); return; }
+  const p = all ? '' : '?from=' + from + '&to=' + to;
+  window.location = '/api/excel' + p;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+const LABELS = {idle:'Hazır',running:'Çalışıyor',paused:'Duraklatıldı',done:'Tamamlandı',error:'Hata',stopped:'Durduruldu'};
+function setBadge(badgeId, txtId, state) {
+  const b = document.getElementById(badgeId);
+  b.className = 'status-badge s-' + state;
+  b.querySelector('.dot').className = 'dot';
+  document.getElementById(txtId).textContent = LABELS[state] || state;
+}
+
+function updateHeader(txt, color) {
+  document.getElementById('hdr-dot').style.background = color;
+  document.getElementById('hdr-txt').textContent = txt;
+}
+
+function fmt(n) { return Number(n).toLocaleString('tr-TR'); }
+
+function addLog(boxId, msg, type) {
+  const box = document.getElementById(boxId);
+  const el = document.createElement('div');
+  el.className = 'log-entry log-' + (type || 'info');
+  const time = new Date().toTimeString().slice(0,8);
+  el.textContent = '[' + time + '] ' + msg;
+  box.insertBefore(el, box.firstChild);
+  while (box.children.length > 200) box.removeChild(box.lastChild);
+}
+
+function clearLog(id) { document.getElementById(id).innerHTML = ''; }
+
+function startScTimer() {
+  clearInterval(scTimer);
+  scTimer = setInterval(() => {
+    if (!scStartTime) return;
+    const s = Math.floor((Date.now() - scStartTime) / 1000);
+    document.getElementById('sc-elapsed').textContent = Math.floor(s/60) + 'dk ' + (s%60) + 's';
+  }, 1000);
+}
+</script>
+</body>
+</html>

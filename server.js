@@ -12,6 +12,7 @@ app.use('/data', express.static(path.join(__dirname, 'data')));
 
 let botProcess = null;
 let logBuffer = [];
+let botStartTime = null;
 let convergenceCount = 0;
 const MAX_CONVERGENCE = 8;
 const CONVERGENCE_THRESHOLD = 30; // Bu kadar eksik varsa yeniden tara
@@ -58,6 +59,7 @@ function resetLastPage() {
 
 // ─── Bot başlatma fonksiyonu (hem UI hem auto-convergence kullanır) ─────────
 function launchBot() {
+  botStartTime = Date.now();
   botProcess = spawn('node', ['index.js'], { cwd: __dirname, env: { ...process.env } });
 
   botProcess.stdout.on('data', chunk => {
@@ -236,7 +238,7 @@ function setStatus(d) {
   document.getElementById('btnStart').disabled = d.status==='running';
   document.getElementById('btnFresh').disabled = d.status==='running';
   document.getElementById('btnStop').disabled = d.status!=='running';
-  if (d.status==='running' && !t0) { t0=Date.now(); timer=setInterval(()=>{ const s=Math.floor((Date.now()-t0)/1000); document.getElementById('s-time').textContent=Math.floor(s/60)+'dk '+s%60+'s'; },1000); }
+  if (d.status==='running') { if (!t0) { t0 = d.startTime ? d.startTime : Date.now(); clearInterval(timer); timer=setInterval(()=>{ const s=Math.floor((Date.now()-t0)/1000); document.getElementById('s-time').textContent=Math.floor(s/60)+'dk '+s%60+'s'; },1000); } }
   if (d.status!=='running') { clearInterval(timer); timer=null; t0=null; }
   if (d.dbCount !== undefined) document.getElementById('s-db').textContent = d.dbCount.toLocaleString('tr-TR');
 }
@@ -275,7 +277,7 @@ async function downloadAll() {
 }
 
 fetch('/logs').then(r=>r.json()).then(logs=>logs.forEach(l=>appendLog(l.msg)));
-fetch('/state').then(r=>r.json()).then(s=>setStatus({status:s.status||'idle',dbCount:s.dbCount||0}));
+fetch('/state').then(r=>r.json()).then(s=>setStatus({status:s.status||'idle',dbCount:s.dbCount||0,startTime:s.botStartTime||null}));
 </script>
 </body>
 </html>`);
@@ -290,7 +292,7 @@ app.get('/events', (req, res) => {
   req.on('close', () => sseClients.delete(res));
 });
 
-app.get('/state', (req, res) => res.json(getState()));
+app.get('/state', (req, res) => res.json({ ...getState(), botStartTime }));
 app.get('/logs', (req, res) => res.json(logBuffer));
 
 // ─── Bot Başlat ──────────────────────────────────────────────────────────────
@@ -318,7 +320,7 @@ app.post('/start', (req, res) => {
 
   logBuffer = [];
   convergenceCount = 0;
-  broadcast({ type: 'status', status: 'running', dbCount: getState().dbCount || 0 });
+  broadcast({ type: 'status', status: 'running', dbCount: getState().dbCount || 0, startTime: botStartTime });
   launchBot();
   res.json({ ok: true });
 });

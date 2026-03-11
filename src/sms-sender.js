@@ -23,8 +23,21 @@ async function shot(page, name) {
  * Portaldaki filtre alanlarını doldurur, "Ara" basar ve toplam kayıt sayısını döner.
  * filters: { kayitStart, kayitEnd, search }  (tarihler YYYY-MM-DD formatında)
  */
-async function applyPortalFilters(page, filters = {}) {
+async function applyPortalFilters(page, filters = {}, _retry = 0) {
   await navigateToApprovalPage(page);
+
+  // Session kontrol — login sayfasına redirect olduysa yeniden giriş yap
+  const urlAfterNav = page.url();
+  if (urlAfterNav.includes('login') || urlAfterNav.includes('giris') || !urlAfterNav.includes('validation')) {
+    if (_retry < 2) {
+      logger.warn('applyPortalFilters: session kopuk, yeniden login...');
+      await refreshSession(page);
+      return applyPortalFilters(page, filters, _retry + 1);
+    }
+    logger.warn('applyPortalFilters: session yenilenemedi');
+    return 0;
+  }
+
   await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 });
 
   // DOM'u kaydet — selector'leri kesinleştirmek için
@@ -121,6 +134,20 @@ async function applyPortalFilters(page, filters = {}) {
       await page.locator('button:has-text("Ara")').first().click({ timeout: 5000 });
       logger.info('"Ara" butonuna tıklandı');
       await humanDelay(2000, 2800);
+
+      // Session kopmuş olabilir — URL kontrol et
+      const urlAfterAra = page.url();
+      if (urlAfterAra.includes('login') || urlAfterAra.includes('giris') || !urlAfterAra.includes('validation')) {
+        if (_retry < 2) {
+          logger.warn('"Ara" sonrası session koptu, yeniden login + filtre...');
+          await shot(page, '5-session-expired');
+          await refreshSession(page);
+          return applyPortalFilters(page, filters, _retry + 1);
+        }
+        logger.warn('Session yenilenemedi, 0 döndürülüyor');
+        return 0;
+      }
+
       await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
     } catch(e) {
       logger.warn('"Ara" butonu: ' + e.message);

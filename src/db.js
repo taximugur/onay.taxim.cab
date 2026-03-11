@@ -120,6 +120,23 @@ const logSMSStmt = db.prepare(`
   VALUES (@referansNo, @durum, @gonderilenSms, @manuelLimit, @sonKullanimTarihi, @hata)
 `);
 
+// SMS gönderildikten sonra gonderilenSms'i artır, sonKullanimTarihi'ni güncelle
+const updateSMSCountStmt = db.prepare(`
+  UPDATE records
+  SET gonderilenSms = CAST(COALESCE(gonderilenSms, '0') AS INTEGER) + 1,
+      sonKullanimTarihi = COALESCE(@sonKullanimTarihi, sonKullanimTarihi),
+      sonKullanimiIso   = COALESCE(@sonKullanimiIso,   sonKullanimiIso)
+  WHERE referansNo = @referansNo
+`);
+
+function updateAfterSMS(referansNo, sonKullanimTarihi) {
+  updateSMSCountStmt.run({
+    referansNo,
+    sonKullanimTarihi: sonKullanimTarihi || null,
+    sonKullanimiIso:   sonKullanimTarihi ? toISO(sonKullanimTarihi) : null,
+  });
+}
+
 function logSMS({ referansNo, durum, gonderilenSms, manuelLimit, sonKullanimTarihi, hata }) {
   logSMSStmt.run({
     referansNo,
@@ -131,4 +148,4 @@ function logSMS({ referansNo, durum, gonderilenSms, manuelLimit, sonKullanimTari
   });
 }
 
-module.exports = { bulkInsert, getState, setState, getCount, queryRecords, logSMS, db };
+module.exports = { bulkInsert, getState, setState, getCount, queryRecords, logSMS, updateAfterSMS, db };

@@ -5,19 +5,20 @@ const logger = require('./logger');
 
 async function waitForTable(page) {
   for (let i = 1; i <= 3; i++) {
-    // Session kontrolü: login sayfasına düştüysek önce refresh yap
+    // Session / URL kontrolü: login sayfasına düştüysek refresh yap
     const url = page.url();
     if (url.includes('login') || url.includes('giris') || !url.includes('validation')) {
       logger.warn('waitForTable: login sayfasına düşüldü, session yenileniyor...');
       await refreshSession(page);
     }
     try {
-      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 40000 });
+      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 60000 });
       await humanDelay(400, 700);
       return;
     } catch(e) {
-      logger.warn('Tablo gelmedi (deneme ' + i + '/3), yenileniyor...');
-      await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+      logger.warn('Tablo gelmedi (deneme ' + i + '/3), tekrar navigate ediliyor...');
+      // page.reload() kullanmıyoruz — SPA'da reload sunucuya gider, login'e yönlendirir
+      await navigateToApprovalPage(page);
       await humanDelay(2000, 3000);
     }
   }

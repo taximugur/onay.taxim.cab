@@ -1,6 +1,7 @@
 const config = require('./config');
 const logger = require('./logger');
 const { humanDelay } = require('./utils');
+const path = require('path');
 
 async function login(page) {
   logger.info('Login sayfasına gidiliyor...');

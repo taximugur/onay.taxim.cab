@@ -441,12 +441,19 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
           const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
           if (!cells[0] || cells[0].textContent.trim() !== refNo) continue;
           const btns = row.querySelectorAll('button, .btn-primary');
-          return btns.length > 0 ? 'has-btn' : 'no-btn';
+          if (btns.length > 0) return 'has-btn';
+          // DEBUG: no-btn durumunda satır HTML'i logla
+          const allInteractive = row.querySelectorAll('button, a, input[type="button"], [role="button"], [class*="btn"]');
+          return 'no-btn|' + allInteractive.length + '|' + row.innerHTML.replace(/\s+/g, ' ').slice(0, 600);
         }
         return 'no-row';
       }, ref).catch(() => 'no-row');
 
       if (btnState !== 'has-btn') {
+        if (btnState.startsWith('no-btn|')) {
+          // İlk 3 no-btn vakası için DOM debug logu
+          if (skipped < 3) logger.warn('DOM_DEBUG [' + ref + ']: ' + btnState.slice(7, 300));
+        }
         if (btnState === 'no-row') {
           // Satır geçici kaybolmuş — networkidle bekle, tekrar dene
           await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
@@ -472,7 +479,8 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
           }
         } else {
           skipped++;
-          logger.warn('SMS butonu yok: ' + ref);
+          const debugInfo = btnState.startsWith('no-btn|') ? btnState.split('|')[1] + ' interactive el' : '';
+          logger.warn('SMS butonu yok: ' + ref + (debugInfo ? ' [' + debugInfo + ']' : ''));
           if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
           continue;
         }

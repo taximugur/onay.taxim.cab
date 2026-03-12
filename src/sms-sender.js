@@ -401,13 +401,16 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
 
       const ref = cells[0];
       if (!ref || processedRefs.has(ref)) continue;
-      processedRefs.add(ref);
 
-      // DB tarih filtresi — eşleşmiyorsa bu sayfada sonraki satıra geç
-      if (targetRefs && !targetRefs.has(ref)) continue;
+      // Non-target ref → hemen işlenmiş say, SMS gönderme
+      if (targetRefs && !targetRefs.has(ref)) {
+        processedRefs.add(ref);
+        continue;
+      }
 
       // Günlük limit
       if (blockedRefs.has(ref)) {
+        processedRefs.add(ref);
         skipped++;
         logger.info('Günlük limit (2x): ' + ref + ' atlandı');
         if (onProgress) onProgress({ ref, status: 'daily-limit', gonderilenSms: 0, manuelLimit: 0, sent, skipped, failed, total: effectiveTotal });
@@ -418,13 +421,14 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       const manuelLimit   = parseInt(cells[7] || '0') || 0;
 
       if (manuelLimit > 0 && gonderilenSms >= manuelLimit) {
+        processedRefs.add(ref);
         skipped++;
         logger.warn('SMS limiti dolu: ' + ref + ' (' + gonderilenSms + '/' + manuelLimit + ')');
         if (onProgress) onProgress({ ref, status: 'limit', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
         continue;
       }
 
-      // Her SMS öncesi tablo yüklenene bekle — React re-render (networkidle değil, satır varlığı)
+      // Tablo yüklenmesini bekle
       try {
         await page.waitForFunction(
           () => document.querySelectorAll('[class*="rdt_TableRow"]').length > 0,
@@ -432,58 +436,33 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         );
       } catch {}
 
-      // Adım 1: Satırda buton var mı? (listener yok, henüz click yok)
-      // NOT: offsetParent kontrolü YOK — headless viewport dışı satırlar offsetParent=null olur
-      // Sadece disabled kontrolü + geniş selector ('button, .btn-primary')
+      // Satır hala bu sayfada mı? (portal SMS sonrası yeniden sıralar → satır başka sayfaya taşınmış olabilir)
       const btnState = await page.evaluate((refNo) => {
         const rows = document.querySelectorAll('[class*="rdt_TableRow"]');
         for (const row of rows) {
           const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
           if (!cells[0] || cells[0].textContent.trim() !== refNo) continue;
           const btns = row.querySelectorAll('button, .btn-primary');
-          if (btns.length > 0) return 'has-btn';
-          // DEBUG: no-btn durumunda satır HTML'i logla
-          const allInteractive = row.querySelectorAll('button, a, input[type="button"], [role="button"], [class*="btn"]');
-          return 'no-btn|' + allInteractive.length + '|' + row.innerHTML.replace(/\s+/g, ' ').slice(0, 600);
+          return btns.length > 0 ? 'has-btn' : 'no-btn';
         }
         return 'no-row';
       }, ref).catch(() => 'no-row');
 
-      if (btnState !== 'has-btn') {
-        if (btnState.startsWith('no-btn|')) {
-          // İlk 3 no-btn vakası için DOM debug logu
-          if (skipped < 3) logger.warn('DOM_DEBUG [' + ref + ']: ' + btnState.slice(7, 300));
-        }
-        if (btnState === 'no-row') {
-          // Satır geçici kaybolmuş — networkidle bekle, tekrar dene
-          await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
-          await page.waitForFunction(
-            () => document.querySelectorAll('[class*="rdt_TableRow"]').length > 0,
-            { timeout: 10000 }
-          ).catch(() => {});
-          const retryState = await page.evaluate((refNo) => {
-            const rows = document.querySelectorAll('[class*="rdt_TableRow"]');
-            for (const row of rows) {
-              const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
-              if (!cells[0] || cells[0].textContent.trim() !== refNo) continue;
-              const btns = row.querySelectorAll('button, .btn-primary');
-              return btns.length > 0 ? 'has-btn' : 'no-btn';
-            }
-            return 'no-row';
-          }, ref).catch(() => 'no-row');
-          if (retryState !== 'has-btn') {
-            skipped++;
-            logger.warn('SMS butonu/satır yok [' + retryState + ']: ' + ref);
-            if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
-            continue;
-          }
-        } else {
-          skipped++;
-          const debugInfo = btnState.startsWith('no-btn|') ? btnState.split('|')[1] + ' interactive el' : '';
-          logger.warn('SMS butonu yok: ' + ref + (debugInfo ? ' [' + debugInfo + ']' : ''));
-          if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
-          continue;
-        }
+      if (btnState === 'no-row') {
+        // Satır re-sort sonrası başka sayfaya taşındı — processedRefs'e EKLEME
+        // İlerideki sayfalarda snapshot'a girecek ve orada işlenecek
+        logger.info('Satır taşındı (re-sort): ' + ref);
+        continue; // processedRefs.add YAPILMADI
+      }
+
+      // Satır bulundu → şimdi işlenmiş say
+      processedRefs.add(ref);
+
+      if (btnState === 'no-btn') {
+        skipped++;
+        logger.warn('SMS butonu yok: ' + ref);
+        if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
+        continue;
       }
 
       // Adım 2: Response listener kur → evaluate ile tıkla (stale handle yok)

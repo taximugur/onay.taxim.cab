@@ -161,165 +161,137 @@ async function applyPortalFilters(page, filters = {}, _retry = 0) {
   return total;
 }
 
-const TR_MONTHS_RX = /^(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)$/;
-
-// Month select locator — sayfadaki Türkçe ay seçenekli <select>
-async function _getMonthSelectBox(page) {
-  const sels = page.locator('select');
-  const n = await sels.count();
-  for (let i = 0; i < n; i++) {
-    const s = sels.nth(i);
-    const opts = await s.locator('option').allTextContents().catch(() => []);
-    if (opts.some(o => TR_MONTHS_RX.test(o.trim()))) return s;
-  }
-  return null;
-}
-
 // Takvimde belirtilen ay/yıla git
-// page.selectOption() ile React select tetiklenir; yıl navigasyonu bounding box ile buton tıklar
+// Tüm DOM işlemleri tek page.evaluate çağrısı ile — Playwright boundingBox yerine
+// getBoundingClientRect() kullanılır. Single-arg wrapped object ile "Too many arguments" yok.
 async function navigateToMonth(page, targetMonth, targetYear) {
-  const monthSel = await _getMonthSelectBox(page);
-  if (!monthSel) {
-    logger.warn('navigateToMonth: ay select bulunamadı');
-    return;
-  }
-
-  // Mevcut ay/yıl oku
-  const opts = await monthSel.locator('option').allTextContents();
-  const curValue = await monthSel.inputValue().catch(() => '');
-  let curMonth = 0;
-  const byVal  = opts.findIndex((_, i) => String(i) === curValue || String(i - 1) === curValue);
-  if (byVal >= 0) curMonth = byVal + 1;
-  else {
-    const byText = opts.findIndex(o => TR_MONTHS_RX.test(o.trim()) && o.trim() === opts[parseInt(curValue)]?.trim());
-    const direct = AYLAR.indexOf((opts[parseInt(curValue)] || '').trim());
-    curMonth = direct > 0 ? direct : (parseInt(curValue) + 1) || 1;
-  }
-
-  const selBox  = await monthSel.boundingBox();
-  const curYear = await page.evaluate(({ x, y, w }) => {
-    // Select'in sağındaki/yakınındaki 4 haneli yıl metnini bul
-    const el = document.elementFromPoint(x + w + 60, y + 8);
-    let node = el;
-    for (let i = 0; i < 6 && node; i++) {
-      const m = node.textContent.match(/\b(20\d{2})\b/);
-      if (m) return parseInt(m[1]);
-      node = node.parentElement;
+  // Mevcut ay/yıl oku (no-arg evaluate)
+  const state = await page.evaluate(() => {
+    const TR_RX = /^(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)$/;
+    const sel = Array.from(document.querySelectorAll('select'))
+      .find(s => Array.from(s.options).some(o => TR_RX.test(o.text.trim())));
+    if (!sel) return null;
+    // Seçili option'ın text'inden ay
+    const selOpt = sel.options[sel.selectedIndex];
+    const monthText = selOpt ? selOpt.text.trim() : '';
+    const MONTHS = ['','Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+    const curMonth = MONTHS.indexOf(monthText);
+    // Yıl: select'in parent tree'sinden bul
+    let el = sel.parentElement;
+    let curYear = 0;
+    for (let i = 0; i < 8 && el; i++) {
+      const m = el.textContent.match(/\b(20\d{2})\b/);
+      if (m) { curYear = parseInt(m[1]); break; }
+      el = el.parentElement;
     }
-    return 0;
-  }, { x: selBox.x, y: selBox.y, w: selBox.width });
+    return { curMonth, curYear };
+  });
 
-  logger.info('navigateToMonth: şu an ' + (AYLAR[curMonth] || curMonth) + ' ' + curYear +
-              ' → hedef ' + AYLAR[targetMonth] + ' ' + targetYear);
+  if (!state) { logger.warn('navigateToMonth: calendar state okunamadı'); return; }
 
-  // Delta ay (negatif = geriye, pozitif = ileriye)
-  const delta = (targetYear * 12 + targetMonth) - ((curYear || 2026) * 12 + curMonth);
+  const { curMonth, curYear } = state;
+  logger.info('navigateToMonth: ' + (AYLAR[curMonth]||curMonth) + ' ' + (curYear||'?') +
+              ' → ' + AYLAR[targetMonth] + ' ' + targetYear);
+
+  const delta = (targetYear * 12 + targetMonth) - ((curYear || 2026) * 12 + (curMonth || 3));
   if (delta === 0) return;
 
-  const steps = Math.abs(delta);
-  const goForward = delta > 0;
+  const steps    = Math.abs(delta);
+  const goFwd    = delta > 0;
 
   for (let i = 0; i < steps; i++) {
-    // Her adımda güncel select box'ı al (sayfa yeniden render olabilir)
-    const mSel = await _getMonthSelectBox(page);
-    const mBox = mSel ? await mSel.boundingBox() : selBox;
-
-    // Select'in solunda (prev) veya sağında (next) en yakın buton
-    const allBtns = page.locator('button');
-    const btnN    = await allBtns.count();
-    let best = null, bestDist = Infinity;
-    const midY = mBox.y + mBox.height / 2;
-
-    for (let j = 0; j < btnN; j++) {
-      const b = allBtns.nth(j);
-      const box = await b.boundingBox().catch(() => null);
-      if (!box || box.width < 4) continue;
-      if (Math.abs((box.y + box.height / 2) - midY) > 35) continue; // aynı yükseklikte değil
-
-      let dist = Infinity;
-      if (goForward && box.x >= mBox.x + mBox.width - 5) {
-        dist = box.x - (mBox.x + mBox.width);
-      } else if (!goForward && box.x + box.width <= mBox.x + 5) {
-        dist = mBox.x - (box.x + box.width);
+    // Her adımda DOM içinde getBoundingClientRect ile buton bul ve tıkla
+    const clicked = await page.evaluate(({ goFwd }) => {
+      const TR_RX = /^(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)$/;
+      const sel = Array.from(document.querySelectorAll('select'))
+        .find(s => Array.from(s.options).some(o => TR_RX.test(o.text.trim())));
+      if (!sel) return false;
+      const sr = sel.getBoundingClientRect();
+      const buttons = Array.from(document.querySelectorAll('button'));
+      let best = null, bestDist = Infinity;
+      for (const btn of buttons) {
+        const r = btn.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const vd = Math.abs((r.top + r.height / 2) - (sr.top + sr.height / 2));
+        if (vd > 60) continue;
+        let d;
+        if (goFwd  && r.left  >= sr.right - 5)  d = r.left  - sr.right;
+        else if (!goFwd && r.right <= sr.left  + 5)  d = sr.left  - r.right;
+        else continue;
+        if (d >= 0 && d < bestDist) { bestDist = d; best = btn; }
       }
-      if (dist < bestDist) { bestDist = dist; best = b; }
-    }
+      if (best) { best.click(); return true; }
+      // Debug: log what we found
+      const near = buttons.filter(b => {
+        const r = b.getBoundingClientRect();
+        return r.width > 0 && Math.abs((r.top + r.height/2) - (sr.top + sr.height/2)) < 60;
+      }).map(b => ({ text: b.textContent.trim().slice(0,10), left: Math.round(b.getBoundingClientRect().left), right: Math.round(b.getBoundingClientRect().right) }));
+      console.log('NAV_BTN_DEBUG selRight=' + Math.round(sr.right) + ' selLeft=' + Math.round(sr.left) + ' nearBtns=' + JSON.stringify(near));
+      return false;
+    }, { goFwd });
 
-    if (best) {
-      await best.click();
-      await humanDelay(280, 420);
-    } else {
-      logger.warn('navigateToMonth: buton bulunamadı (adım ' + i + '/' + steps + ')');
+    if (!clicked) {
+      logger.warn('navigateToMonth: buton tıklanamadı (adım ' + (i+1) + '/' + steps + ')');
       break;
     }
+    await humanDelay(300, 450);
   }
 
-  // Sonuç kontrolü
-  const finalSel = await _getMonthSelectBox(page);
-  if (finalSel) {
-    const finalVal  = await finalSel.inputValue().catch(() => '?');
-    const finalYear = await page.evaluate(({ x, y, w }) => {
-      const el = document.elementFromPoint(x + w + 60, y + 8);
-      let node = el;
-      for (let i = 0; i < 6 && node; i++) {
-        const m = node.textContent.match(/\b(20\d{2})\b/);
-        if (m) return parseInt(m[1]);
-        node = node.parentElement;
-      }
-      return 0;
-    }, await (async () => { const b = await finalSel.boundingBox(); return { x: b.x, y: b.y, w: b.width }; })());
-    const idx = parseInt(finalVal);
-    const finalMonthName = !isNaN(idx) ? (AYLAR[idx + 1] || AYLAR[idx] || finalVal) : finalVal;
-    logger.info('navigateToMonth: sonuç → ' + finalMonthName + ' ' + finalYear);
-  }
+  // Sonuç log
+  const final = await page.evaluate(() => {
+    const TR_RX = /^(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)$/;
+    const sel = Array.from(document.querySelectorAll('select'))
+      .find(s => Array.from(s.options).some(o => TR_RX.test(o.text.trim())));
+    if (!sel) return null;
+    const selOpt = sel.options[sel.selectedIndex];
+    let el = sel.parentElement, yr = 0;
+    for (let i = 0; i < 8 && el; i++) {
+      const m = el.textContent.match(/\b(20\d{2})\b/);
+      if (m) { yr = parseInt(m[1]); break; }
+      el = el.parentElement;
+    }
+    return { month: selOpt ? selOpt.text.trim() : '?', year: yr };
+  });
+  if (final) logger.info('navigateToMonth: sonuç → ' + final.month + ' ' + final.year);
 }
 
 // Takvimde belirtilen güne tıkla
-// Month select'in bounding box'ını referans alarak calendar alanındaki gün hücrelerini bulur
+// page.evaluate içinde getBoundingClientRect ile calendar hücresini bulur
 async function clickDay(page, day) {
-  const dayStr = String(day);
+  const clicked = await page.evaluate(({ day }) => {
+    const dayStr = String(day);
+    const TR_RX = /^(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)$/;
+    const sel = Array.from(document.querySelectorAll('select'))
+      .find(s => Array.from(s.options).some(o => TR_RX.test(o.text.trim())));
+    const sr = sel ? sel.getBoundingClientRect() : null;
 
-  // Month select'in konumunu bul → calendar alanı bunun altında
-  const mSel = await _getMonthSelectBox(page);
-  const mBox = mSel ? await mSel.boundingBox().catch(() => null) : null;
-
-  // td ve gridcell elementleri — exact text match, disabled olmayan
-  const candidates = page.locator('td, [role="gridcell"]').filter({
-    hasText: new RegExp('^' + dayStr + '$'),
-  });
-  const cnt = await candidates.count();
-
-  for (let i = 0; i < cnt; i++) {
-    const cell = candidates.nth(i);
-    const cls  = (await cell.getAttribute('class').catch(() => '') || '').toLowerCase();
-    if (cls.includes('disabled') || cls.includes('off') || cls.includes('other') || cls.includes('muted')) continue;
-    if (await cell.isDisabled().catch(() => false)) continue;
-
-    // Eğer month select bulunduysa, hücrenin calendar alanında olup olmadığını kontrol et
-    if (mBox) {
-      const cBox = await cell.boundingBox().catch(() => null);
-      if (!cBox) continue;
-      // Calendar hücreleri: select'in altında ve yatay olarak yakın
-      if (cBox.y < mBox.y + 5) continue;         // select'in üstünde
-      if (cBox.x < mBox.x - 300) continue;       // çok sola kaçmış
-      if (cBox.x > mBox.x + mBox.width + 300) continue; // çok sağa kaçmış
+    const cells = Array.from(document.querySelectorAll('td, [role="gridcell"]'));
+    for (const cell of cells) {
+      if (cell.textContent.trim() !== dayStr) continue;
+      const cls = (cell.className || '').toLowerCase();
+      if (cls.includes('disabled') || cls.includes('off') ||
+          cls.includes('other') || cls.includes('muted') ||
+          cell.hasAttribute('disabled')) continue;
+      if (sr) {
+        const r = cell.getBoundingClientRect();
+        if (r.top < sr.top) continue;            // select'in üstünde → takvim dışı
+        if (Math.abs(r.left - sr.left) > 350) continue; // çok uzakta → ana tablo
+      }
+      cell.click();
+      return true;
     }
+    return false;
+  }, { day });
 
-    await cell.click();
-    logger.info('clickDay: ' + day + ' tıklandı');
-    return;
-  }
-
-  // Fallback
-  logger.warn('clickDay: ' + day + ' konumsal bulunamadı, getByRole deneniyor...');
-  try {
-    await page.getByRole('gridcell', { name: dayStr, exact: true }).first().click({ timeout: 2000 });
-  } catch {
+  if (!clicked) {
+    logger.warn('clickDay: ' + day + ' bulunamadı');
     try {
-      await page.locator('table td').filter({ hasText: new RegExp('^' + dayStr + '$') }).first().click({ timeout: 2000 });
+      await page.locator('table td').filter({ hasText: new RegExp('^' + day + '$') }).first().click({ timeout: 2000 });
     } catch(e) {
       logger.warn('clickDay hata: ' + e.message);
     }
+  } else {
+    logger.info('clickDay: ' + day + ' tıklandı');
   }
 }
 

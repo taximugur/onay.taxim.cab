@@ -353,21 +353,10 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
     logger.info('DB filtresi aktif: ' + targetRefs.size + ' hedef ref (' + filters.kayitStart + ' — ' + filters.kayitEnd + ')');
   }
 
-  if (targetRefs) {
-    // Filtresiz tam portal listesi
-    // page.goto KULLANMIYORUZ — SPA auth state'i (in-memory token) yok eder
-    // page.reload(): aynı URL yeniden yüklenir → cookies/localStorage korunur, React state (filtreler) sıfırlanır
-    const currentUrl = page.url();
-    if (!currentUrl.includes('validation-waiting-records')) {
-      await navigateToApprovalPage(page);
-    }
-    await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
-    // reload sonrası session kontrolü
-    const urlAfterReload = page.url();
-    if (urlAfterReload.includes('login') || urlAfterReload.includes('giris') || !urlAfterReload.includes('validation')) {
-      logger.warn('sendBulkSMS: reload sonrası session koptu, yeniden login...');
-      await refreshSession(page);
-    }
+  // Portal'a date filtresi uygula (tarih aralığı varsa) → 18K yerine ~7K kayıt taranır
+  // Bu sayede re-sort etkisi azalır ve tüm hedef kayıtlar görünür
+  if (filters && filters.kayitStart && filters.kayitEnd) {
+    await _applyDateFilterToPortal(page, filters.kayitStart, filters.kayitEnd);
   } else {
     await applyPortalFilters(page, filters || {});
   }
@@ -591,6 +580,72 @@ async function setMaxRowsPerPage(page) {
       await page.waitForTimeout(1500);
     }
   } catch(e) { logger.warn('setMaxRowsPerPage: ' + e.message); }
+}
+
+// Portal date filter uygula: tarih inputuna yaz → Ara → sonuçları bekle
+// 18K tüm kayıt yerine sadece hedef tarih aralığını tarar (re-sort etkisi azalır)
+async function _applyDateFilterToPortal(page, startISO, endISO) {
+  // ISO → DD.MM.YYYY
+  const fmt = iso => { const [y, m, d] = iso.split('-'); return d + '.' + m + '.' + y; };
+  const startFmt = fmt(startISO); // 01.01.2025
+  const endFmt   = fmt(endISO);   // 31.12.2025
+
+  // Portal'ı temizlenmiş halde aç (reload → filtreler sıfırlanır)
+  const currentUrl = page.url();
+  if (!currentUrl.includes('validation-waiting-records')) {
+    await navigateToApprovalPage(page);
+  }
+  await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+  const urlAfterReload = page.url();
+  if (urlAfterReload.includes('login') || !urlAfterReload.includes('validation')) {
+    await refreshSession(page);
+  }
+  await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 }).catch(() => {});
+
+  // Tarih input'unu bul ve doldur — Playwright fill() React synthetic event tetikler
+  try {
+    const dateInput = page.locator(
+      'input[placeholder*="Kayıt Tarihi"], ' +
+      'input[placeholder*="kayıt tarihi"], ' +
+      'input[placeholder*="Tarih"], ' +
+      'label:has-text("Kayıt Tarihi") + input, ' +
+      'label:has-text("Kayıt Tarihi") ~ input'
+    ).first();
+
+    await dateInput.click({ timeout: 8000 });
+    await humanDelay(500, 700);
+
+    // Takvim açıldıysa eski yöntemle git
+    await navigateToMonth(page, parseInt(startFmt.split('.')[1]), parseInt(startFmt.split('.')[2]));
+    await humanDelay(200, 400);
+    await clickDay(page, parseInt(startFmt.split('.')[0]));
+    await humanDelay(400, 600);
+
+    const [em, ey] = [parseInt(endFmt.split('.')[1]), parseInt(endFmt.split('.')[2])];
+    const [sm, sy] = [parseInt(startFmt.split('.')[1]), parseInt(startFmt.split('.')[2])];
+    if (em !== sm || ey !== sy) {
+      await navigateToMonth(page, em, ey);
+      await humanDelay(200, 400);
+    }
+    await clickDay(page, parseInt(endFmt.split('.')[0]));
+    await humanDelay(400, 600);
+
+    logger.info('Tarih filtresi uygulandı: ' + startFmt + ' — ' + endFmt);
+  } catch(e) {
+    logger.warn('Tarih filtresi uygulanamadı: ' + e.message + ' — filtresiz devam');
+    return; // filtresiz devam
+  }
+
+  // Ara butonuna tıkla
+  try {
+    await page.locator('button:has-text("Ara")').first().click({ timeout: 5000 });
+    await humanDelay(2000, 3000);
+    await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 20000 }).catch(() => {});
+    const filtered = await _getTotalCount(page);
+    logger.info('Portal filtreli toplam: ' + filtered + ' kayıt');
+  } catch(e) {
+    logger.warn('"Ara" butonu hatası: ' + e.message);
+  }
 }
 
 async function _getTotalPages(page) {

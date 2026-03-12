@@ -357,11 +357,17 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
     // Filtresiz tam portal listesi — page.goto ile filtre temizle (navigateToApprovalPage erken çıkıyor)
     const base = new URL(page.url()).origin;
     await page.goto(base + '/validation-waiting-records', { waitUntil: 'networkidle', timeout: 30000 });
+    // goto sonrası session kontrolü — login sayfasına yönlendirildiyse yeniden giriş
+    const urlAfterGoto = page.url();
+    if (urlAfterGoto.includes('login') || urlAfterGoto.includes('giris') || !urlAfterGoto.includes('validation')) {
+      logger.warn('sendBulkSMS: goto sonrası session koptu, yeniden login...');
+      await refreshSession(page);
+    }
   } else {
     await applyPortalFilters(page, filters || {});
   }
 
-  await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
+  await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 60000 });
 
   const totalPages = await _getTotalPages(page);
   const portalTotal = await _getTotalCount(page);
@@ -373,7 +379,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   pageLoop: for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     if (checkPauseStop) await checkPauseStop();
 
-    await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 }).catch(() => {});
+    await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 60000 }).catch(() => {});
     const rows = await page.$$('[class*="rdt_TableRow"]').catch(() => []);
 
     for (const row of rows) {

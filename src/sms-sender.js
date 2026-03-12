@@ -480,19 +480,39 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       }, ref).catch(() => {});
 
       let success = false;
+      let session401 = false;
       try {
         const response = await responsePromise;
         if (response) {
           try {
             const json = await response.json();
-            success = json.Success === true || json.success === true;
-            if (!success) logger.warn('SMS API: ' + JSON.stringify(json));
+            if (response.status() === 401 || json.status_code === 401 || json.message === 'unauthorized') {
+              session401 = true;
+              logger.warn('SMS API 401 — session süresi doldu: ' + ref);
+            } else {
+              success = json.Success === true || json.success === true;
+              if (!success) logger.warn('SMS API: ' + JSON.stringify(json));
+            }
           } catch { success = response.status() === 200; }
         } else {
           success = true;
         }
       } catch(e) {
         logger.warn('SMS response hatası ' + ref + ': ' + e.message);
+      }
+
+      // 401: session expire — yeniden login + filter + sayfa 1'den yeniden tara
+      if (session401) {
+        logger.warn('Session yenileniyor, sayfa 1\'den yeniden tarama başlıyor...');
+        processedRefs.delete(ref); // bu ref'i yeniden dene
+        await refreshSession(page);
+        if (filters && filters.kayitStart && filters.kayitEnd) {
+          await _applyDateFilterToPortal(page, filters.kayitStart, filters.kayitEnd);
+        } else {
+          await navigateToApprovalPage(page);
+        }
+        pageNum = 0; // for loop increment → 1, portal da page 1'de
+        break; // inner loop'tan çık → outer continue ile page 1'den devam
       }
 
       if (success) {
@@ -536,7 +556,23 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       el => el.textContent.trim()
     ).catch(() => '');
     const clicked = await _clickNext(page);
-    if (!clicked) { logger.warn('Next page tıklanamadı, durduruluyor'); break; }
+    if (!clicked) {
+      // Pagination bulunamadı — session expire mi kontrol et
+      const urlFail = page.url();
+      if (urlFail.includes('login') || !urlFail.includes('validation')) {
+        logger.warn('_clickNext: session koptu (sayfa ' + pageNum + '), kurtarma + sayfa 1\'den devam...');
+        await refreshSession(page);
+        if (filters && filters.kayitStart && filters.kayitEnd) {
+          await _applyDateFilterToPortal(page, filters.kayitStart, filters.kayitEnd);
+        } else {
+          await navigateToApprovalPage(page);
+        }
+        pageNum = 0; // increment → 1, portal page 1'de
+        continue;
+      }
+      logger.warn('Next page tıklanamadı, durduruluyor');
+      break;
+    }
 
     try {
       await page.waitForFunction(
@@ -688,9 +724,9 @@ async function _getTotalPages(page) {
 async function _clickNext(page) {
   // Pagination görünene kadar bekle (React render sonrası kaybolabilir)
   try {
-    await page.waitForSelector('[class*="rdt_Pagination"] button', { timeout: 8000 });
+    await page.waitForSelector('[class*="rdt_Pagination"] button', { timeout: 20000 });
   } catch(e) {
-    logger.warn('_clickNext: pagination bekleme timeout');
+    logger.warn('_clickNext: pagination bekleme timeout — URL: ' + page.url());
     return false;
   }
 

@@ -384,7 +384,14 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   pageLoop: for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     if (checkPauseStop) await checkPauseStop();
 
-    await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 60000 }).catch(() => {});
+    await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 60000 }).catch(async () => {
+      const url = page.url();
+      if (url.includes('login') || !url.includes('validation')) {
+        logger.warn('Sayfa başında session koptu, kurtarma...');
+        await refreshSession(page);
+        await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 }).catch(() => {});
+      }
+    });
 
     // Tüm satır verisini tek seferde evaluate ile oku — React re-render'dan önce snapshot
     // Bu sayede row ElementHandle stale olmaz, veri güvenilir
@@ -557,14 +564,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
     if (urlAfterNext.includes('login') || !urlAfterNext.includes('validation')) {
       logger.warn('SMS sayfa geçişinde session koptu (sayfa ' + pageNum + '), kurtarma...');
       await refreshSession(page);
-      const base2 = new URL(page.url()).origin;
-      await page.goto(base2 + '/validation-waiting-records', { waitUntil: 'networkidle', timeout: 30000 });
-      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
-      for (let p = 1; p < pageNum; p++) {
-        await _clickNext(page);
-        await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 8000 }).catch(() => {});
-        await humanDelay(400, 600);
-      }
+      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 }).catch(() => {});
     }
 
     await humanDelay(200, 400);

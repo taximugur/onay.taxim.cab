@@ -137,7 +137,8 @@ function updateAfterSMS(referansNo, sonKullanimTarihi) {
   });
 }
 
-// Bugün bu sistemle 2+ kez başarıyla SMS gönderilmiş ref'leri döner (Set)
+// Bugün bu sistemle 1+ kez başarıyla SMS gönderilmiş ref'leri döner (Set)
+// Günde 1 kez gönderim limiti — yeniden başlatmada aynı kişilere tekrar gitmesin
 function getTodayBlockedRefs() {
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   const rows = db.prepare(`
@@ -146,7 +147,7 @@ function getTodayBlockedRefs() {
     WHERE durum = 'ok'
       AND date(tarih) = ?
     GROUP BY referansNo
-    HAVING COUNT(*) >= 2
+    HAVING COUNT(*) >= 1
   `).all(today);
   return new Set(rows.map(r => r.referansNo));
 }

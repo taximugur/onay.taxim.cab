@@ -345,7 +345,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   let sent = 0, skipped = 0, failed = 0;
   const { getTodayBlockedRefs, getRefsByDateRange } = require('./db');
   const blockedRefs = getTodayBlockedRefs();
-  if (blockedRefs.size > 0) logger.info('Bugün limit dolmuş (2x): ' + blockedRefs.size + ' ref atlanacak');
+  if (blockedRefs.size > 0) logger.info('Bugün limit dolmuş (1x): ' + blockedRefs.size + ' ref atlanacak');
 
   let targetRefs = null;
   if (filters && filters.kayitStart && filters.kayitEnd) {
@@ -408,7 +408,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       if (blockedRefs.has(ref)) {
         processedRefs.add(ref);
         skipped++;
-        logger.info('Günlük limit (2x): ' + ref + ' atlandı');
+        logger.info('Günlük limit (1x): ' + ref + ' atlandı');
         if (onProgress) onProgress({ ref, status: 'daily-limit', gonderilenSms: 0, manuelLimit: 0, sent, skipped, failed, total: effectiveTotal });
         continue;
       }
@@ -645,6 +645,31 @@ async function _applyDateFilterToPortal(page, startISO, endISO) {
     logger.info('Portal filtreli toplam: ' + filtered + ' kayıt');
   } catch(e) {
     logger.warn('"Ara" butonu hatası: ' + e.message);
+  }
+
+  // Stabil sıralama: referansNo sütununa tıkla (1. kolon)
+  // Portal her SMS sonrası gonderilenSms'e göre yeniden sıralıyor → satırlar kayıyor.
+  // ReferansNo'ya göre sıralarsak SMS gönderimi sıralamayı bozmaz → tüm sayfalar güvenle taranır.
+  try {
+    const sorted = await page.evaluate(() => {
+      const headers = Array.from(document.querySelectorAll('[class*="rdt_TableCol"]'));
+      if (headers.length === 0) return false;
+      // İlk sütun (referansNo) başlığına tıkla
+      const firstHeader = headers[0];
+      // Tıklanabilir element bul (genellikle div içinde span ya da div)
+      const clickable = firstHeader.querySelector('[role="button"], [class*="rdt_TableCol_Sortable"], div[tabindex]') || firstHeader;
+      clickable.click();
+      return true;
+    });
+    if (sorted) {
+      logger.info('ReferansNo sütununa göre sıralandı (stabil sıralama)');
+      await humanDelay(800, 1200);
+      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 10000 }).catch(() => {});
+    } else {
+      logger.warn('Stabil sıralama: sütun başlığı bulunamadı');
+    }
+  } catch(e) {
+    logger.warn('Stabil sıralama hatası: ' + e.message);
   }
 }
 

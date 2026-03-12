@@ -358,6 +358,9 @@ socket.on('sms:sent', (d) => {
   } else if (d.status === 'daily-limit') {
     msg = `⛔ ${pos}${d.ref} — günlük limit (bugün 2x gönderildi)`;
     cls = 'warn';
+  } else if (d.status === 'no-btn') {
+    msg = `⏭ ${pos}${d.ref} — SMS butonu yok (hiç gönderilmemiş)`;
+    cls = 'warn';
   } else {
     msg = `✗ ${pos}${d.ref} — hata${d.error ? ': ' + d.error : ''}`;
     cls = 'err';
@@ -425,6 +428,7 @@ function smsStart() {
     ? fmt(portalCount) + ' kayda SMS gönderilecek. Emin misiniz?'
     : 'Filtrelere göre SMS gönderimi başlatılacak. Emin misiniz?';
   if (!confirm(msg)) return;
+  updateSmsUI('running'); // Durdur butonunu hemen aktif et — sunucu onayı bekleme
   socket.emit('sms:start', getSmsFilters());
 }
 

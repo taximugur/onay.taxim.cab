@@ -432,14 +432,16 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         );
       } catch {}
 
-      // Adım 1: Satırda tıklanabilir buton var mı? (listener yok, henüz click yok)
+      // Adım 1: Satırda buton var mı? (listener yok, henüz click yok)
+      // NOT: offsetParent kontrolü YOK — headless viewport dışı satırlar offsetParent=null olur
+      // Sadece disabled kontrolü + geniş selector ('button, .btn-primary')
       const btnState = await page.evaluate((refNo) => {
         const rows = document.querySelectorAll('[class*="rdt_TableRow"]');
         for (const row of rows) {
           const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
           if (!cells[0] || cells[0].textContent.trim() !== refNo) continue;
-          const btns = row.querySelectorAll('button');
-          return Array.from(btns).some(b => !b.disabled && b.offsetParent !== null) ? 'has-btn' : 'no-btn';
+          const btns = row.querySelectorAll('button, .btn-primary');
+          return btns.length > 0 ? 'has-btn' : 'no-btn';
         }
         return 'no-row';
       }, ref).catch(() => 'no-row');
@@ -457,8 +459,8 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
             for (const row of rows) {
               const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
               if (!cells[0] || cells[0].textContent.trim() !== refNo) continue;
-              const btns = row.querySelectorAll('button');
-              return Array.from(btns).some(b => !b.disabled && b.offsetParent !== null) ? 'has-btn' : 'no-btn';
+              const btns = row.querySelectorAll('button, .btn-primary');
+              return btns.length > 0 ? 'has-btn' : 'no-btn';
             }
             return 'no-row';
           }, ref).catch(() => 'no-row');
@@ -487,9 +489,9 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         for (const row of rows) {
           const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
           if (!cells[0] || cells[0].textContent.trim() !== refNo) continue;
-          const btns = row.querySelectorAll('button');
+          const btns = row.querySelectorAll('button, .btn-primary');
           for (const btn of btns) {
-            if (!btn.disabled && btn.offsetParent !== null) { btn.click(); return; }
+            if (!btn.disabled) { btn.click(); return; }
           }
         }
       }, ref).catch(() => {});

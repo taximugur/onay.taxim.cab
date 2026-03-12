@@ -417,9 +417,13 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         break;
       }
 
-      let smsBtn;
-      try { smsBtn = await row.$('.btn-primary, button:has-text("SMS Gönder")'); } catch { smsBtn = null; }
-      if (!smsBtn) {
+      // Locator ile taze sorgu — stale ElementHandle'dan kaçın
+      const smsBtnLocator = page.locator('[class*="rdt_TableRow"]')
+        .filter({ hasText: ref })
+        .locator('.btn-primary, button:has-text("SMS Gönder")')
+        .first();
+      const btnVisible = await smsBtnLocator.isVisible().catch(() => false);
+      if (!btnVisible) {
         logger.warn('SMS butonu yok: ' + ref);
         skipped++;
         break;
@@ -431,7 +435,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
             r => r.url().includes('reSendSms') || r.url().includes('sendSms'),
             { timeout: 10000 }
           ).catch(() => null),
-          smsBtn.click(),
+          smsBtnLocator.click({ timeout: 5000 }),
         ]);
 
         let success = false;

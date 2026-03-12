@@ -309,7 +309,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
 
   const totalPages = await _getTotalPages(page);
-  logger.info('SMS tarama başladı: ' + total + ' kayıt, ' + totalPages + ' sayfa');
+  logger.info('SMS tarama başladı: ' + total + ' kayıt, ' + totalPages + ' sayfa (rows/page: ' + Math.ceil(total / (totalPages || 1)) + ')');
 
   let prevFirstRef = null;
 
@@ -490,10 +490,33 @@ async function _clickNext(page) {
   try {
     const btns = await page.$$('[class*="rdt_Pagination"] button');
     const active = [];
-    for (const b of btns) if (!(await b.isDisabled())) active.push(b);
+    for (const b of btns) {
+      if (!(await b.isDisabled())) active.push(b);
+    }
+    logger.info('_clickNext: toplam btn=' + btns.length + ' aktif=' + active.length);
+    // Aktif butonların text'lerini logla
+    const texts = [];
+    for (const b of active) texts.push(((await b.textContent()) || '').trim().substring(0, 10));
+    logger.info('_clickNext aktif butonlar: ' + JSON.stringify(texts));
+
+    // "Next" butonunu bul: genellikle son iki aktif btndan ilki (veya > işareti)
+    for (const b of active) {
+      const t = ((await b.textContent()) || '').trim();
+      if (t === '>' || t === '›' || t === 'Next' || t === 'Sonraki' || t === '→') {
+        await b.click(); return true;
+      }
+    }
+    // aria-label ile dene
+    for (const b of active) {
+      const label = (await b.getAttribute('aria-label') || '').toLowerCase();
+      if (label.includes('next') || label.includes('sonraki') || label.includes('ileri')) {
+        await b.click(); return true;
+      }
+    }
+    // Fallback: active'in sondan 2. butonu (eski mantık)
     if (active.length >= 2) { await active[active.length - 2].click(); return true; }
     if (active.length === 1) { await active[0].click(); return true; }
-  } catch(e) {}
+  } catch(e) { logger.warn('_clickNext hata: ' + e.message); }
   return false;
 }
 

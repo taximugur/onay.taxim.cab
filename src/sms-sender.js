@@ -310,55 +310,60 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   const totalPages = await _getTotalPages(page);
   logger.info('SMS tarama başladı: ' + total + ' kayıt, ' + totalPages + ' sayfa (rows/page: ' + Math.ceil(total / (totalPages || 1)) + ')');
 
-  let prevFirstRef = null;
+  // Portal her SMS sonrası tabloyu re-render edebilir → eski row handle'ları geçersiz olur.
+  // Çözüm: her SMS öncesi tabloyu taze sorgula, işlenenleri Set ile takip et.
+  const processedRefs = new Set();
+  let pageNum = 1;
+  let noNewConsecutive = 0;
 
-  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+  while (sent + skipped + failed < total) {
     if (checkPauseStop) await checkPauseStop();
 
-    if (pageNum % 50 === 0) {
-      const alive = await checkSession(page);
-      if (!alive) {
-        await refreshSession(page);
-        await applyPortalFilters(page, filters || {});
-        await setMaxRowsPerPage(page);
-        await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
-      }
-    }
+    // Taze sorgu
+    const rows = await page.$$('[class*="rdt_TableRow"]').catch(() => []);
 
-    const rows = await page.$$('[class*="rdt_TableRow"]');
-
+    // Bu sayfada işlenmemiş ilk satırı bul
+    let foundNew = false;
     for (const row of rows) {
-      if (checkPauseStop) await checkPauseStop();
-
-      const cells = await row.$$('[class*="rdt_TableCell"]');
+      let cells;
+      try { cells = await row.$$('[class*="rdt_TableCell"]'); } catch { continue; }
       if (cells.length < 8) continue;
 
-      const ref = ((await cells[0].textContent()) || '').trim();
-      if (!ref) continue;
+      let ref;
+      try { ref = ((await cells[0].textContent()) || '').trim(); } catch { continue; }
+      if (!ref || processedRefs.has(ref)) continue;
 
-      // Günde 2 kez sınırı — bugün 2+ kez gönderildiyse atla
+      processedRefs.add(ref);
+      foundNew = true;
+      noNewConsecutive = 0;
+
+      // Günlük limit
       if (blockedRefs.has(ref)) {
         skipped++;
         logger.info('Günlük limit (2x): ' + ref + ' atlandı');
         if (onProgress) onProgress({ ref, status: 'daily-limit', gonderilenSms: 0, manuelLimit: 0, sent, skipped, failed, total });
-        continue;
+        break;
       }
 
-      const gonderilenSms = parseInt(((await cells[6].textContent()) || '0').trim()) || 0;
-      const manuelLimit   = parseInt(((await cells[7].textContent()) || '0').trim()) || 0;
+      let gonderilenSms, manuelLimit;
+      try {
+        gonderilenSms = parseInt(((await cells[6].textContent()) || '0').trim()) || 0;
+        manuelLimit   = parseInt(((await cells[7].textContent()) || '0').trim()) || 0;
+      } catch { gonderilenSms = 0; manuelLimit = 0; }
 
       if (manuelLimit > 0 && gonderilenSms >= manuelLimit) {
         logger.warn('SMS limiti dolu: ' + ref + ' (' + gonderilenSms + '/' + manuelLimit + ')');
         skipped++;
         if (onProgress) onProgress({ ref, status: 'limit', gonderilenSms, manuelLimit, sent, skipped, failed, total });
-        continue;
+        break;
       }
 
-      const smsBtn = await row.$('.btn-primary, button:has-text("SMS Gönder")');
+      let smsBtn;
+      try { smsBtn = await row.$('.btn-primary, button:has-text("SMS Gönder")'); } catch { smsBtn = null; }
       if (!smsBtn) {
         logger.warn('SMS butonu yok: ' + ref);
         skipped++;
-        continue;
+        break;
       }
 
       try {
@@ -383,16 +388,13 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
 
         if (success) {
           sent++;
-          // Kısa bekleme — portal hücreyi güncellesin
           await humanDelay(400, 600);
-          // Güncel sonKullanimTarihi ve gonderilenSms'i portaldan oku
-          let sonKullanimTarihi = null;
-          let yeniGonderilenSms = gonderilenSms;
+          let sonKullanimTarihi = null, yeniGonderilenSms = gonderilenSms;
           try {
-            const updatedCells = await row.$$('[class*="rdt_TableCell"]');
-            if (updatedCells[9]) sonKullanimTarihi = ((await updatedCells[9].textContent()) || '').trim() || null;
-            if (updatedCells[6]) yeniGonderilenSms = parseInt(((await updatedCells[6].textContent()) || '0').trim()) || gonderilenSms;
-          } catch(e2) {}
+            const uc = await row.$$('[class*="rdt_TableCell"]');
+            if (uc[9]) sonKullanimTarihi = ((await uc[9].textContent()) || '').trim() || null;
+            if (uc[6]) yeniGonderilenSms = parseInt(((await uc[6].textContent()) || '0').trim()) || gonderilenSms;
+          } catch {}
           logger.info('SMS gönderildi: ' + ref + (sonKullanimTarihi ? ' | son: ' + sonKullanimTarihi : ''));
           if (onProgress) onProgress({ ref, status: 'ok', gonderilenSms: yeniGonderilenSms, manuelLimit, sonKullanimTarihi, sent, skipped, failed, total });
         } else {
@@ -400,54 +402,52 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
           if (onProgress) onProgress({ ref, status: 'error', gonderilenSms, manuelLimit, sent, skipped, failed, total });
           await humanDelay(400, 700);
         }
-
       } catch(e) {
         logger.warn('SMS tıklama hatası ' + ref + ': ' + e.message);
         failed++;
         if (onProgress) onProgress({ ref, status: 'error', error: e.message, gonderilenSms, manuelLimit, sent, skipped, failed, total });
       }
+      break; // Her iterasyonda bir satır işle, sonra taze sorgu
     }
 
-    if (pageNum >= totalPages) break;
+    if (!foundNew) {
+      // Bu sayfada işlenecek yeni kayıt yok → sonraki sayfaya geç
+      noNewConsecutive++;
+      if (noNewConsecutive > 3) break; // Art arda 3 boş sayfa → dur
 
-    prevFirstRef = rows[0]
-      ? await rows[0].$eval('[class*="rdt_TableCell"]', el => el.textContent.trim()).catch(() => '')
-      : null;
+      if (pageNum >= totalPages) break;
 
-    const clicked = await _clickNext(page);
-    if (!clicked) break;
+      const prevRef = await page.$eval('[class*="rdt_TableRow"] [class*="rdt_TableCell"]', el => el.textContent.trim()).catch(() => '');
+      const clicked = await _clickNext(page);
+      if (!clicked) break;
 
-    try {
-      await page.waitForFunction(
-        (prev) => {
-          const r = document.querySelector('[class*="rdt_TableRow"]');
-          if (!r) return false;
-          const c = r.querySelector('[class*="rdt_TableCell"]');
-          return c && c.textContent.trim() !== prev;
-        },
-        prevFirstRef, { timeout: 12000 }
-      );
-    } catch { await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}); }
+      try {
+        await page.waitForFunction(
+          (prev) => {
+            const c = document.querySelector('[class*="rdt_TableRow"] [class*="rdt_TableCell"]');
+            return c && c.textContent.trim() !== prev;
+          },
+          prevRef, { timeout: 12000 }
+        );
+      } catch { await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}); }
 
-    // Sayfa geçişinde session kopmuş olabilir — URL kontrol et
-    const urlAfterNext = page.url();
-    if (urlAfterNext.includes('login') || urlAfterNext.includes('giris') || !urlAfterNext.includes('validation')) {
-      logger.warn('SMS sayfa geçişinde session koptu (sayfa ' + pageNum + '→' + (pageNum + 1) + '), kurtarma yapılıyor...');
-      await refreshSession(page);
-      // Filtreleri yeniden uygula
-      await applyPortalFilters(page, filters || {}, 2);
-      await setMaxRowsPerPage(page);
-      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
-      // Doğru sayfaya git: pageNum kere "next" tıkla (sayfa 1'den pageNum+1'e)
-      for (let p = 0; p < pageNum; p++) {
-        await _clickNext(page);
-        await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 8000 }).catch(() => {});
-        await humanDelay(400, 600);
+      // Session kontrol
+      const urlAfterNext = page.url();
+      if (urlAfterNext.includes('login') || !urlAfterNext.includes('validation')) {
+        logger.warn('SMS sayfa geçişinde session koptu (sayfa ' + pageNum + '), kurtarma...');
+        await refreshSession(page);
+        await applyPortalFilters(page, filters || {}, 2);
+        await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
+        for (let p = 0; p < pageNum; p++) {
+          await _clickNext(page);
+          await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 8000 }).catch(() => {});
+          await humanDelay(400, 600);
+        }
       }
-      logger.info('Sayfa ' + (pageNum + 1) + "'e kurtarma ile ulaşıldı");
-    }
 
-    await humanDelay(200, 400);
+      pageNum++;
+      await humanDelay(300, 500);
+    }
   }
 
   logger.info('SMS tamamlandı — gönderildi: ' + sent + ', atlandı: ' + skipped + ', hata: ' + failed);

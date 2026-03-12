@@ -305,7 +305,6 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
 
   const total = await applyPortalFilters(page, filters || {});
 
-  await setMaxRowsPerPage(page);
   await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
 
   const totalPages = await _getTotalPages(page);
@@ -487,33 +486,37 @@ async function _getTotalPages(page) {
 }
 
 async function _clickNext(page) {
+  // Pagination görünene kadar bekle (React render sonrası kaybolabilir)
+  try {
+    await page.waitForSelector('[class*="rdt_Pagination"] button', { timeout: 8000 });
+  } catch(e) {
+    logger.warn('_clickNext: pagination bekleme timeout');
+    return false;
+  }
+
   try {
     const btns = await page.$$('[class*="rdt_Pagination"] button');
     const active = [];
     for (const b of btns) {
       if (!(await b.isDisabled())) active.push(b);
     }
-    logger.info('_clickNext: toplam btn=' + btns.length + ' aktif=' + active.length);
-    // Aktif butonların text'lerini logla
-    const texts = [];
-    for (const b of active) texts.push(((await b.textContent()) || '').trim().substring(0, 10));
-    logger.info('_clickNext aktif butonlar: ' + JSON.stringify(texts));
+    logger.info('_clickNext: btn=' + btns.length + ' aktif=' + active.length);
 
-    // "Next" butonunu bul: genellikle son iki aktif btndan ilki (veya > işareti)
-    for (const b of active) {
-      const t = ((await b.textContent()) || '').trim();
-      if (t === '>' || t === '›' || t === 'Next' || t === 'Sonraki' || t === '→') {
-        await b.click(); return true;
-      }
-    }
-    // aria-label ile dene
+    // aria-label ile "next" bul
     for (const b of active) {
       const label = (await b.getAttribute('aria-label') || '').toLowerCase();
       if (label.includes('next') || label.includes('sonraki') || label.includes('ileri')) {
         await b.click(); return true;
       }
     }
-    // Fallback: active'in sondan 2. butonu (eski mantık)
+    // Text ile bul
+    for (const b of active) {
+      const t = ((await b.textContent()) || '').trim();
+      if (t === '>' || t === '›' || t === 'Next' || t === 'Sonraki') {
+        await b.click(); return true;
+      }
+    }
+    // Fallback: active sondan 2. (genellikle Next, son = Last)
     if (active.length >= 2) { await active[active.length - 2].click(); return true; }
     if (active.length === 1) { await active[0].click(); return true; }
   } catch(e) { logger.warn('_clickNext hata: ' + e.message); }

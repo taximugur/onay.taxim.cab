@@ -70,14 +70,36 @@ async function applyPortalFilters(page, filters = {}, _retry = 0) {
       await humanDelay(600, 900);
       await shot(page, '2-calendar-open');
 
-      // Takvim popup'ını bekle
-      const calSel = '.datepicker, .calendar, [class*="picker"], [class*="calendar"], ' +
-                     '[class*="daterangepicker"], [class*="DatePicker"], [class*="date-picker"]';
+      // Calendar DOM'unu kaydet (debug)
       try {
-        await page.waitForSelector(calSel, { timeout: 5000 });
-      } catch(e) {
-        logger.warn('Takvim popup bekleniyor timeout, devam ediliyor...');
-      }
+        const calHtml = await page.content();
+        fs.writeFileSync('data/cal-open.html', calHtml);
+        // Calendar structure debug
+        const dbg = await page.evaluate(() => {
+          const TR_RX = /^(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)$/;
+          const sel = Array.from(document.querySelectorAll('select'))
+            .find(s => Array.from(s.options).some(o => TR_RX.test(o.text.trim())));
+          if (!sel) return 'select not found';
+          const parent = sel.parentElement;
+          const gp = parent ? parent.parentElement : null;
+          const ggp = gp ? gp.parentElement : null;
+          return {
+            selClass: sel.className,
+            parentTag: parent ? parent.tagName + '.' + parent.className.slice(0,40) : '-',
+            parentText: parent ? parent.textContent.slice(0,80) : '-',
+            gpTag: gp ? gp.tagName + '.' + gp.className.slice(0,40) : '-',
+            gpText: gp ? gp.textContent.slice(0,80) : '-',
+            ggpTag: ggp ? ggp.tagName + '.' + ggp.className.slice(0,40) : '-',
+            ggpText: ggp ? ggp.textContent.slice(0,80) : '-',
+            btnsNear: Array.from(document.querySelectorAll('button')).map(b => {
+              const r = b.getBoundingClientRect();
+              const sr = sel.getBoundingClientRect();
+              return { text: b.textContent.trim().slice(0,15), cls: b.className.slice(0,30), left: Math.round(r.left), top: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), vd: Math.round(Math.abs((r.top+r.height/2)-(sr.top+sr.height/2))) };
+            }).filter(b => b.vd < 80 && b.w > 0).slice(0, 10)
+          };
+        });
+        logger.info('CAL_DEBUG: ' + JSON.stringify(dbg));
+      } catch(e) { logger.warn('cal debug: ' + e.message); }
 
       // Başlangıç ayına git
       await navigateToMonth(page, start.month, start.year);

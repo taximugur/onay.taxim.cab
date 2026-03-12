@@ -162,73 +162,74 @@ async function applyPortalFilters(page, filters = {}, _retry = 0) {
 }
 
 // Takvimde belirtilen ay/yıla git
+// Portal'daki takvim Mart/2026 gibi dropdown select kullanıyor — direkt seç
 async function navigateToMonth(page, targetMonth, targetYear) {
-  for (let i = 0; i < 36; i++) {
-    // Takvim header'ından şu anki ay/yıl oku
-    const headerText = await page.evaluate(() => {
-      const selectors = [
-        '[class*="picker"] [class*="header"]',
-        '[class*="picker"] [class*="title"]',
-        '[class*="calendar"] [class*="header"]',
-        '[class*="calendar"] [class*="title"]',
-        '[class*="daterange"] [class*="header"]',
-        '.datepicker-header',
-        '.month-title',
-        '[class*="month"]',
-      ];
-      for (const s of selectors) {
-        const el = document.querySelector(s);
-        if (el && el.textContent.trim()) return el.textContent.trim();
-      }
-      // Fallback: takvim içindeki tüm text'i al
-      const picker = document.querySelector('[class*="picker"], [class*="calendar"], [class*="daterange"]');
-      return picker ? picker.textContent.substring(0, 100) : '';
-    });
+  // Türkçe ay ismi → index (1=Ocak...12=Aralık)
+  // Select option value genellikle 0-indexed (0=Ocak) veya ay adı
+  // Önce dropdown (select) ile dene
+  const calSel = '[class*="picker"], [class*="calendar"], [class*="daterange"], .datepicker';
 
-    // Hangi ay ve yıl gösteriliyor?
+  // Yıl select
+  const yearSet = await page.evaluate((targetYear, calSel) => {
+    const picker = document.querySelector(calSel);
+    if (!picker) return false;
+    const selects = picker.querySelectorAll('select');
+    for (const sel of selects) {
+      // Yıl select: options 2020-2030 gibi 4 haneli değerler
+      const opts = Array.from(sel.options);
+      if (opts.some(o => /^\d{4}$/.test(o.value) && parseInt(o.value) >= 2020)) {
+        const opt = opts.find(o => parseInt(o.value) === targetYear);
+        if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; }
+      }
+    }
+    return false;
+  }, targetYear, calSel);
+
+  if (yearSet) await humanDelay(200, 400);
+
+  // Ay select (0-indexed veya 1-indexed)
+  const monthSet = await page.evaluate((targetMonth, calSel, AYLAR) => {
+    const picker = document.querySelector(calSel);
+    if (!picker) return false;
+    const selects = picker.querySelectorAll('select');
+    for (const sel of selects) {
+      const opts = Array.from(sel.options);
+      // Ay ismi ile eşleş
+      const byName = opts.findIndex(o => AYLAR.includes(o.text.trim()) || AYLAR.includes(o.value));
+      if (byName >= 0) {
+        // 0-indexed: targetMonth-1, 1-indexed: targetMonth
+        const zeroOpt = opts.find(o => parseInt(o.value) === targetMonth - 1);
+        const oneOpt  = opts.find(o => parseInt(o.value) === targetMonth);
+        const nameOpt = opts.find(o => o.text.trim() === AYLAR[targetMonth]);
+        const target  = zeroOpt || nameOpt || oneOpt;
+        if (target) { sel.value = target.value; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; }
+      }
+    }
+    return false;
+  }, targetMonth, calSel, AYLAR);
+
+  if (monthSet) { await humanDelay(200, 400); return; }
+
+  // Dropdown çalışmadıysa — buton ile ilerle/geri git
+  logger.warn('navigateToMonth: dropdown bulunamadı, buton navigasyonu deneniyor');
+  for (let i = 0; i < 36; i++) {
+    const headerText = await page.evaluate((calSel) => {
+      const picker = document.querySelector(calSel);
+      return picker ? picker.textContent.substring(0, 80) : '';
+    }, calSel);
+
     const currentMonth = AYLAR.findIndex(a => a && headerText.includes(a));
     const yilMatch = headerText.match(/\d{4}/);
     const currentYear = yilMatch ? parseInt(yilMatch[0]) : 0;
+    if (currentMonth > 0 && currentMonth === targetMonth && currentYear === targetYear) break;
 
-    if (currentMonth === targetMonth && currentYear === targetYear) break;
-
-    const cur = currentYear * 12 + (currentMonth || 0);
+    const cur = currentYear * 12 + Math.max(currentMonth, 1);
     const tgt = targetYear * 12 + targetMonth;
 
     if (tgt > cur) {
-      // İleri: ">" butonuna tıkla
-      await page.evaluate(() => {
-        const candidates = [
-          document.querySelector('[class*="picker"] button:last-child'),
-          document.querySelector('[class*="next"]'),
-          document.querySelector('[class*="arrow"]:last-child'),
-          ...(document.querySelectorAll('[class*="picker"] button') || []),
-        ].filter(Boolean);
-        // ">" veya sağ ok olan buton
-        for (const btn of candidates) {
-          const t = btn.textContent.trim();
-          if (t === '>' || t === '›' || t === '→' || t === '»') { btn.click(); return; }
-        }
-        // Fallback: son buton
-        const btns = document.querySelectorAll('[class*="picker"] button, [class*="calendar"] button');
-        if (btns.length > 0) btns[btns.length - 1].click();
-      });
+      await page.locator(calSel + ' button').last().click({ timeout: 1000 }).catch(() => {});
     } else {
-      // Geri: "<" butonuna tıkla
-      await page.evaluate(() => {
-        const candidates = [
-          document.querySelector('[class*="prev"]'),
-          document.querySelector('[class*="arrow"]:first-child'),
-          ...(document.querySelectorAll('[class*="picker"] button') || []),
-        ].filter(Boolean);
-        for (const btn of candidates) {
-          const t = btn.textContent.trim();
-          if (t === '<' || t === '‹' || t === '←' || t === '«') { btn.click(); return; }
-        }
-        // Fallback: ilk buton
-        const btns = document.querySelectorAll('[class*="picker"] button, [class*="calendar"] button');
-        if (btns.length > 0) btns[0].click();
-      });
+      await page.locator(calSel + ' button').first().click({ timeout: 1000 }).catch(() => {});
     }
     await humanDelay(300, 500);
   }

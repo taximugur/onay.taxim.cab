@@ -162,4 +162,19 @@ function logSMS({ referansNo, durum, gonderilenSms, manuelLimit, sonKullanimTari
   });
 }
 
-module.exports = { bulkInsert, getState, setState, getCount, queryRecords, logSMS, updateAfterSMS, getTodayBlockedRefs, db };
+// Tarih aralığına göre referansNo Set'i döner (backend filtre için)
+function getRefsByDateRange(startISO, endISO) {
+  const rows = db.prepare(
+    'SELECT referansNo FROM records WHERE kayitTarihi_iso >= ? AND kayitTarihi_iso <= ?'
+  ).all(startISO, endISO);
+  return new Set(rows.map(r => r.referansNo));
+}
+
+// Tarih aralığındaki kayıt sayısını döner
+function countByDateRange(startISO, endISO) {
+  return db.prepare(
+    'SELECT COUNT(*) as n FROM records WHERE kayitTarihi_iso >= ? AND kayitTarihi_iso <= ?'
+  ).get(startISO, endISO).n;
+}
+
+module.exports = { bulkInsert, getState, setState, getCount, queryRecords, logSMS, updateAfterSMS, getTodayBlockedRefs, getRefsByDateRange, countByDateRange, db };

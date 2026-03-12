@@ -24,6 +24,14 @@ async function shot(page, name) {
  * filters: { kayitStart, kayitEnd, search }  (tarihler YYYY-MM-DD formatında)
  */
 async function applyPortalFilters(page, filters = {}, _retry = 0) {
+  // Tarih filtresi varsa — portal calendar yerine direkt DB'den say
+  const { countByDateRange } = require('./db');
+  if (filters.kayitStart && filters.kayitEnd) {
+    const dbCount = countByDateRange(filters.kayitStart, filters.kayitEnd);
+    logger.info('DB filtre sayımı: ' + dbCount + ' kayıt (' + filters.kayitStart + ' — ' + filters.kayitEnd + ')');
+    return dbCount;
+  }
+
   await navigateToApprovalPage(page);
 
   // Session kontrol — login sayfasına redirect olduysa yeniden giriş yap
@@ -335,25 +343,33 @@ async function _getTotalCount(page) {
  */
 async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   let sent = 0, skipped = 0, failed = 0;
-  // Bugün 2+ kez gönderilmiş ref'ler — tekrar gönderilmez
-  const { getTodayBlockedRefs } = require('./db');
+  const { getTodayBlockedRefs, getRefsByDateRange } = require('./db');
   const blockedRefs = getTodayBlockedRefs();
   if (blockedRefs.size > 0) logger.info('Bugün limit dolmuş (2x): ' + blockedRefs.size + ' ref atlanacak');
 
-  const total = await applyPortalFilters(page, filters || {});
+  // Tarih filtresi varsa — DB'den hedef refs al, portal filter uygulamadan tüm sayfaları tara
+  let targetRefs = null;
+  if (filters && filters.kayitStart && filters.kayitEnd) {
+    targetRefs = getRefsByDateRange(filters.kayitStart, filters.kayitEnd);
+    logger.info('DB filtresi aktif: ' + targetRefs.size + ' hedef ref (' + filters.kayitStart + ' — ' + filters.kayitEnd + ')');
+  }
+
+  // Portal'a git — tarih filtresi UYGULAMADAN (DB filtresi kullanılıyor)
+  const filtersForPortal = targetRefs ? {} : (filters || {});
+  const total = await applyPortalFilters(page, filtersForPortal);
+  const effectiveTotal = targetRefs ? targetRefs.size : total;
 
   await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
 
   const totalPages = await _getTotalPages(page);
-  logger.info('SMS tarama başladı: ' + total + ' kayıt, ' + totalPages + ' sayfa (rows/page: ' + Math.ceil(total / (totalPages || 1)) + ')');
+  const portalTotal = targetRefs ? (await _getTotalCount(page)) : total;
+  logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt, portal=' + portalTotal + ', ' + totalPages + ' sayfa');
 
-  // Portal her SMS sonrası tabloyu re-render edebilir → eski row handle'ları geçersiz olur.
-  // Çözüm: her SMS öncesi tabloyu taze sorgula, işlenenleri Set ile takip et.
   const processedRefs = new Set();
   let pageNum = 1;
   let noNewConsecutive = 0;
 
-  while (sent + skipped + failed < total) {
+  while (sent + skipped + failed < effectiveTotal) {
     if (checkPauseStop) await checkPauseStop();
 
     // Taze sorgu
@@ -374,11 +390,17 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       foundNew = true;
       noNewConsecutive = 0;
 
+      // DB tarih filtresi — hedef ref değilse hızlıca atla
+      if (targetRefs && !targetRefs.has(ref)) {
+        // Bu ref hedef aralıkta değil, atla (sayma)
+        break; // taze sorgu ile devam
+      }
+
       // Günlük limit
       if (blockedRefs.has(ref)) {
         skipped++;
         logger.info('Günlük limit (2x): ' + ref + ' atlandı');
-        if (onProgress) onProgress({ ref, status: 'daily-limit', gonderilenSms: 0, manuelLimit: 0, sent, skipped, failed, total });
+        if (onProgress) onProgress({ ref, status: 'daily-limit', gonderilenSms: 0, manuelLimit: 0, sent, skipped, failed, total: effectiveTotal });
         break;
       }
 
@@ -391,7 +413,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       if (manuelLimit > 0 && gonderilenSms >= manuelLimit) {
         logger.warn('SMS limiti dolu: ' + ref + ' (' + gonderilenSms + '/' + manuelLimit + ')');
         skipped++;
-        if (onProgress) onProgress({ ref, status: 'limit', gonderilenSms, manuelLimit, sent, skipped, failed, total });
+        if (onProgress) onProgress({ ref, status: 'limit', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
         break;
       }
 
@@ -433,16 +455,16 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
             if (uc[6]) yeniGonderilenSms = parseInt(((await uc[6].textContent()) || '0').trim()) || gonderilenSms;
           } catch {}
           logger.info('SMS gönderildi: ' + ref + (sonKullanimTarihi ? ' | son: ' + sonKullanimTarihi : ''));
-          if (onProgress) onProgress({ ref, status: 'ok', gonderilenSms: yeniGonderilenSms, manuelLimit, sonKullanimTarihi, sent, skipped, failed, total });
+          if (onProgress) onProgress({ ref, status: 'ok', gonderilenSms: yeniGonderilenSms, manuelLimit, sonKullanimTarihi, sent, skipped, failed, total: effectiveTotal });
         } else {
           failed++;
-          if (onProgress) onProgress({ ref, status: 'error', gonderilenSms, manuelLimit, sent, skipped, failed, total });
+          if (onProgress) onProgress({ ref, status: 'error', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
           await humanDelay(400, 700);
         }
       } catch(e) {
         logger.warn('SMS tıklama hatası ' + ref + ': ' + e.message);
         failed++;
-        if (onProgress) onProgress({ ref, status: 'error', error: e.message, gonderilenSms, manuelLimit, sent, skipped, failed, total });
+        if (onProgress) onProgress({ ref, status: 'error', error: e.message, gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
       }
       break; // Her iterasyonda bir satır işle, sonra taze sorgu
     }

@@ -339,7 +339,7 @@ async function _getTotalCount(page) {
 
 /**
  * Portal üzerinde toplu SMS gönder.
- * Filtreler bu fonksiyon içinde uygulanır.
+ * Tarih filtresi varsa DB'den targetRefs alır, portal tam listesini sayfa sayfa tarar.
  */
 async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   let sent = 0, skipped = 0, failed = 0;
@@ -347,37 +347,38 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   const blockedRefs = getTodayBlockedRefs();
   if (blockedRefs.size > 0) logger.info('Bugün limit dolmuş (2x): ' + blockedRefs.size + ' ref atlanacak');
 
-  // Tarih filtresi varsa — DB'den hedef refs al, portal filter uygulamadan tüm sayfaları tara
   let targetRefs = null;
   if (filters && filters.kayitStart && filters.kayitEnd) {
     targetRefs = getRefsByDateRange(filters.kayitStart, filters.kayitEnd);
     logger.info('DB filtresi aktif: ' + targetRefs.size + ' hedef ref (' + filters.kayitStart + ' — ' + filters.kayitEnd + ')');
   }
 
-  // Portal'a git — tarih filtresi UYGULAMADAN (DB filtresi kullanılıyor)
-  const filtersForPortal = targetRefs ? {} : (filters || {});
-  const total = await applyPortalFilters(page, filtersForPortal);
-  const effectiveTotal = targetRefs ? targetRefs.size : total;
+  if (targetRefs) {
+    // Filtresiz tam portal listesi — page.goto ile filtre temizle (navigateToApprovalPage erken çıkıyor)
+    const base = new URL(page.url()).origin;
+    await page.goto(base + '/validation-waiting-records', { waitUntil: 'networkidle', timeout: 30000 });
+  } else {
+    await applyPortalFilters(page, filters || {});
+  }
 
   await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
 
   const totalPages = await _getTotalPages(page);
-  const portalTotal = targetRefs ? (await _getTotalCount(page)) : total;
+  const portalTotal = await _getTotalCount(page);
+  const effectiveTotal = targetRefs ? targetRefs.size : portalTotal;
   logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt, portal=' + portalTotal + ', ' + totalPages + ' sayfa');
 
   const processedRefs = new Set();
-  let pageNum = 1;
-  let noNewConsecutive = 0;
 
-  while (sent + skipped + failed < effectiveTotal) {
+  pageLoop: for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     if (checkPauseStop) await checkPauseStop();
 
-    // Taze sorgu
+    await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 }).catch(() => {});
     const rows = await page.$$('[class*="rdt_TableRow"]').catch(() => []);
 
-    // Bu sayfada işlenmemiş ilk satırı bul
-    let foundNew = false;
     for (const row of rows) {
+      if (checkPauseStop) await checkPauseStop();
+
       let cells;
       try { cells = await row.$$('[class*="rdt_TableCell"]'); } catch { continue; }
       if (cells.length < 8) continue;
@@ -385,23 +386,17 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       let ref;
       try { ref = ((await cells[0].textContent()) || '').trim(); } catch { continue; }
       if (!ref || processedRefs.has(ref)) continue;
-
       processedRefs.add(ref);
-      foundNew = true;
-      noNewConsecutive = 0;
 
-      // DB tarih filtresi — hedef ref değilse hızlıca atla
-      if (targetRefs && !targetRefs.has(ref)) {
-        // Bu ref hedef aralıkta değil, atla (sayma)
-        break; // taze sorgu ile devam
-      }
+      // DB tarih filtresi — eşleşmiyorsa bu sayfada sonraki satıra geç
+      if (targetRefs && !targetRefs.has(ref)) continue;
 
       // Günlük limit
       if (blockedRefs.has(ref)) {
         skipped++;
         logger.info('Günlük limit (2x): ' + ref + ' atlandı');
         if (onProgress) onProgress({ ref, status: 'daily-limit', gonderilenSms: 0, manuelLimit: 0, sent, skipped, failed, total: effectiveTotal });
-        break;
+        continue;
       }
 
       let gonderilenSms, manuelLimit;
@@ -411,10 +406,10 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       } catch { gonderilenSms = 0; manuelLimit = 0; }
 
       if (manuelLimit > 0 && gonderilenSms >= manuelLimit) {
-        logger.warn('SMS limiti dolu: ' + ref + ' (' + gonderilenSms + '/' + manuelLimit + ')');
         skipped++;
+        logger.warn('SMS limiti dolu: ' + ref + ' (' + gonderilenSms + '/' + manuelLimit + ')');
         if (onProgress) onProgress({ ref, status: 'limit', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
-        break;
+        continue;
       }
 
       // Locator ile taze sorgu — stale ElementHandle'dan kaçın
@@ -424,9 +419,10 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         .first();
       const btnVisible = await smsBtnLocator.isVisible().catch(() => false);
       if (!btnVisible) {
-        logger.warn('SMS butonu yok: ' + ref);
         skipped++;
-        break;
+        logger.warn('SMS butonu yok: ' + ref);
+        if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
+        continue;
       }
 
       try {
@@ -454,9 +450,11 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
           await humanDelay(400, 600);
           let sonKullanimTarihi = null, yeniGonderilenSms = gonderilenSms;
           try {
-            const uc = await row.$$('[class*="rdt_TableCell"]');
-            if (uc[9]) sonKullanimTarihi = ((await uc[9].textContent()) || '').trim() || null;
-            if (uc[6]) yeniGonderilenSms = parseInt(((await uc[6].textContent()) || '0').trim()) || gonderilenSms;
+            const freshCells = await page.locator('[class*="rdt_TableRow"]')
+              .filter({ hasText: ref })
+              .locator('[class*="rdt_TableCell"]').all();
+            if (freshCells[9]) sonKullanimTarihi = ((await freshCells[9].textContent()) || '').trim() || null;
+            if (freshCells[6]) yeniGonderilenSms = parseInt(((await freshCells[6].textContent()) || '0').trim()) || gonderilenSms;
           } catch {}
           logger.info('SMS gönderildi: ' + ref + (sonKullanimTarihi ? ' | son: ' + sonKullanimTarihi : ''));
           if (onProgress) onProgress({ ref, status: 'ok', gonderilenSms: yeniGonderilenSms, manuelLimit, sonKullanimTarihi, sent, skipped, failed, total: effectiveTotal });
@@ -470,51 +468,49 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         failed++;
         if (onProgress) onProgress({ ref, status: 'error', error: e.message, gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
       }
-      break; // Her iterasyonda bir satır işle, sonra taze sorgu
+
+      if (sent + skipped + failed >= effectiveTotal) break pageLoop;
     }
 
-    if (!foundNew) {
-      // Bu sayfada işlenecek yeni kayıt yok → sonraki sayfaya geç
-      noNewConsecutive++;
-      if (noNewConsecutive > 3) break; // Art arda 3 boş sayfa → dur
+    if (pageNum >= totalPages) break;
 
-      if (pageNum >= totalPages) break;
+    const prevRef = await page.$eval(
+      '[class*="rdt_TableRow"] [class*="rdt_TableCell"]',
+      el => el.textContent.trim()
+    ).catch(() => '');
+    const clicked = await _clickNext(page);
+    if (!clicked) { logger.warn('Next page tıklanamadı, durduruluyor'); break; }
 
-      const prevRef = await page.$eval('[class*="rdt_TableRow"] [class*="rdt_TableCell"]', el => el.textContent.trim()).catch(() => '');
-      const clicked = await _clickNext(page);
-      if (!clicked) break;
+    try {
+      await page.waitForFunction(
+        (prev) => {
+          const c = document.querySelector('[class*="rdt_TableRow"] [class*="rdt_TableCell"]');
+          return c && c.textContent.trim() !== prev;
+        },
+        prevRef, { timeout: 12000 }
+      );
+    } catch { await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}); }
 
-      try {
-        await page.waitForFunction(
-          (prev) => {
-            const c = document.querySelector('[class*="rdt_TableRow"] [class*="rdt_TableCell"]');
-            return c && c.textContent.trim() !== prev;
-          },
-          prevRef, { timeout: 12000 }
-        );
-      } catch { await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}); }
-
-      // Session kontrol
-      const urlAfterNext = page.url();
-      if (urlAfterNext.includes('login') || !urlAfterNext.includes('validation')) {
-        logger.warn('SMS sayfa geçişinde session koptu (sayfa ' + pageNum + '), kurtarma...');
-        await refreshSession(page);
-        await applyPortalFilters(page, filters || {}, 2);
-        await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
-        for (let p = 0; p < pageNum; p++) {
-          await _clickNext(page);
-          await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 8000 }).catch(() => {});
-          await humanDelay(400, 600);
-        }
+    // Session kontrol
+    const urlAfterNext = page.url();
+    if (urlAfterNext.includes('login') || !urlAfterNext.includes('validation')) {
+      logger.warn('SMS sayfa geçişinde session koptu (sayfa ' + pageNum + '), kurtarma...');
+      await refreshSession(page);
+      const base2 = new URL(page.url()).origin;
+      await page.goto(base2 + '/validation-waiting-records', { waitUntil: 'networkidle', timeout: 30000 });
+      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 15000 });
+      for (let p = 1; p < pageNum; p++) {
+        await _clickNext(page);
+        await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 8000 }).catch(() => {});
+        await humanDelay(400, 600);
       }
-
-      pageNum++;
-      await humanDelay(300, 500);
     }
+
+    await humanDelay(200, 400);
   }
 
   logger.info('SMS tamamlandı — gönderildi: ' + sent + ', atlandı: ' + skipped + ', hata: ' + failed);
-  return { sent, skipped, failed, total };
+  return { sent, skipped, failed, total: effectiveTotal };
 }
 
 async function setMaxRowsPerPage(page) {

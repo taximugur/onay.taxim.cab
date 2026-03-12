@@ -1,7 +1,6 @@
 const config = require('./config');
 const logger = require('./logger');
 const { humanDelay } = require('./utils');
-const path = require('path');
 
 async function login(page) {
   logger.info('Login sayfasına gidiliyor...');
@@ -108,29 +107,18 @@ async function refreshSession(page) {
 }
 
 async function navigateToApprovalPage(page) {
-  // Sol menüden "Müşteri Onayı Bekleyenler" linkine tıkla
-  const menuSelectors = [
-    'a:has-text("Müşteri Onayı Bekleyen")',
-    'a:has-text("Onay Bekleyen")',
-    'span:has-text("Müşteri Onayı Bekleyen")',
-    '[href*="approval"]',
-    '[href*="onay"]',
-    '[href*="pending"]',
-  ];
+  // Direkt URL ile git — menü tıklamaya gerek yok
+  const base = new URL(config.LOGIN_URL).origin;
+  const approvalUrl = base + '/validation-waiting-records';
 
-  for (const sel of menuSelectors) {
-    try {
-      await page.click(sel, { timeout: 3000 });
-      await page.waitForLoadState('networkidle');
-      await new Promise(r => setTimeout(r, 2000));
-      logger.info('Onay sayfasına gidildi:', sel);
-      return;
-    } catch {}
+  const current = page.url();
+  if (current.includes('validation-waiting-records')) {
+    // Zaten doğru sayfadayız
+    return;
   }
 
-  logger.warn('Menü linki bulunamadı, screenshot alınıyor...');
-  await page.screenshot({ path: path.join('screenshots', 'menu-error.png') });
-  throw new Error('Müşteri Onayı Bekleyenler menüsü bulunamadı');
+  await page.goto(approvalUrl, { waitUntil: 'networkidle', timeout: 30000 });
+  logger.info('Onay sayfasına gidildi: ' + approvalUrl);
 }
 
 module.exports = { login, checkSession, refreshSession, navigateToApprovalPage };

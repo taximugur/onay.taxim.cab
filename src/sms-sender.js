@@ -385,17 +385,21 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
     if (checkPauseStop) await checkPauseStop();
 
     await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 60000 }).catch(() => {});
-    const rows = await page.$$('[class*="rdt_TableRow"]').catch(() => []);
 
-    for (const row of rows) {
+    // Tüm satır verisini tek seferde evaluate ile oku — React re-render'dan önce snapshot
+    // Bu sayede row ElementHandle stale olmaz, veri güvenilir
+    const pageRowData = await page.evaluate(() => {
+      const rows = document.querySelectorAll('[class*="rdt_TableRow"]');
+      return Array.from(rows).map(row => {
+        const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
+        return Array.from(cells).map(c => (c.textContent || '').trim());
+      }).filter(cells => cells.length >= 8 && cells[0]);
+    }).catch(() => []);
+
+    for (const cells of pageRowData) {
       if (checkPauseStop) await checkPauseStop();
 
-      let cells;
-      try { cells = await row.$$('[class*="rdt_TableCell"]'); } catch { continue; }
-      if (cells.length < 8) continue;
-
-      let ref;
-      try { ref = ((await cells[0].textContent()) || '').trim(); } catch { continue; }
+      const ref = cells[0];
       if (!ref || processedRefs.has(ref)) continue;
       processedRefs.add(ref);
 
@@ -410,11 +414,8 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         continue;
       }
 
-      let gonderilenSms, manuelLimit;
-      try {
-        gonderilenSms = parseInt(((await cells[6].textContent()) || '0').trim()) || 0;
-        manuelLimit   = parseInt(((await cells[7].textContent()) || '0').trim()) || 0;
-      } catch { gonderilenSms = 0; manuelLimit = 0; }
+      const gonderilenSms = parseInt(cells[6] || '0') || 0;
+      const manuelLimit   = parseInt(cells[7] || '0') || 0;
 
       if (manuelLimit > 0 && gonderilenSms >= manuelLimit) {
         skipped++;
@@ -423,30 +424,20 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         continue;
       }
 
-      // Butonu bul: önce row handle'dan direkt (en güvenilir), stale ise fresh locator
-      let clickFn = null;
-      try {
-        // row handle'dan direkt — global filter() arama sorununu bypass eder
-        const btnFromRow = await row.$('.btn-primary, button');
-        if (btnFromRow) {
-          clickFn = () => btnFromRow.click({ timeout: 5000 });
-        }
-      } catch {}
+      // Fresh Playwright Locator — React re-render sonrası bile çalışır
+      // waitFor ile render tamamlanana bekle (isVisible() gibi anlık kontrol değil)
+      const smsBtnLocator = page.locator('[class*="rdt_TableRow"]')
+        .filter({ hasText: ref })
+        .locator('.btn-primary, button')
+        .first();
 
-      if (!clickFn) {
-        // Stale row → fresh page locator ile dene (geniş selector: herhangi bir button)
-        const freshLoc = page.locator('[class*="rdt_TableRow"]')
-          .filter({ hasText: ref })
-          .locator('button')
-          .last();
-        const btnVisible = await freshLoc.isVisible().catch(() => false);
-        if (!btnVisible) {
-          skipped++;
-          logger.warn('SMS butonu yok (gerçekten yok): ' + ref);
-          if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
-          continue;
-        }
-        clickFn = () => freshLoc.click({ timeout: 5000 });
+      try {
+        await smsBtnLocator.waitFor({ state: 'visible', timeout: 5000 });
+      } catch {
+        skipped++;
+        logger.warn('SMS butonu yok: ' + ref);
+        if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
+        continue;
       }
 
       try {
@@ -455,7 +446,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
             r => r.url().includes('reSendSms') || r.url().includes('sendSms'),
             { timeout: 10000 }
           ).catch(() => null),
-          clickFn(),
+          smsBtnLocator.click({ timeout: 5000 }),
         ]);
 
         let success = false;

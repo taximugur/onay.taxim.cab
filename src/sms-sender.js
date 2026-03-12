@@ -161,105 +161,160 @@ async function applyPortalFilters(page, filters = {}, _retry = 0) {
   return total;
 }
 
+// Takvimde ay select'ini bulur (calSel bağımsız, global arama)
+function _findMonthSelect() {
+  const TR_MONTHS = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran',
+                     'Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+  return Array.from(document.querySelectorAll('select')).find(s => {
+    const opts = Array.from(s.options);
+    return opts.length >= 11 && opts.some(o => TR_MONTHS.includes(o.text.trim()));
+  }) || null;
+}
+
 // Takvimde belirtilen ay/yıla git
-// Portal'daki takvim Mart/2026 gibi dropdown select kullanıyor — direkt seç
+// calSel bağımsız: ay <select> global aranır, yıl için bounding rect ile prev/next buton bulunur
 async function navigateToMonth(page, targetMonth, targetYear) {
-  // Türkçe ay ismi → index (1=Ocak...12=Aralık)
-  // Select option value genellikle 0-indexed (0=Ocak) veya ay adı
-  // Önce dropdown (select) ile dene
-  const calSel = '[class*="picker"], [class*="calendar"], [class*="daterange"], .datepicker';
+  // Step 1: Ay select ile hedef ayı seç
+  const monthSetResult = await page.evaluate((targetMonth, AYLAR) => {
+    const TR_MONTHS = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran',
+                       'Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+    const sel = Array.from(document.querySelectorAll('select')).find(s => {
+      const opts = Array.from(s.options);
+      return opts.length >= 11 && opts.some(o => TR_MONTHS.includes(o.text.trim()));
+    });
+    if (!sel) return { set: false };
+    const opts = Array.from(sel.options);
+    const byName = opts.find(o => o.text.trim() === AYLAR[targetMonth]);
+    const by0    = opts.find(o => parseInt(o.value) === targetMonth - 1);
+    const by1    = opts.find(o => parseInt(o.value) === targetMonth);
+    const target = byName || by0 || by1;
+    if (!target) return { set: false };
+    sel.value = target.value;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return { set: true, value: target.value };
+  }, targetMonth, AYLAR);
 
-  // Yıl select
-  const yearSet = await page.evaluate((targetYear, calSel) => {
-    const picker = document.querySelector(calSel);
-    if (!picker) return false;
-    const selects = picker.querySelectorAll('select');
-    for (const sel of selects) {
-      // Yıl select: options 2020-2030 gibi 4 haneli değerler
-      const opts = Array.from(sel.options);
-      if (opts.some(o => /^\d{4}$/.test(o.value) && parseInt(o.value) >= 2020)) {
-        const opt = opts.find(o => parseInt(o.value) === targetYear);
-        if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; }
-      }
-    }
-    return false;
-  }, targetYear, calSel);
-
-  if (yearSet) await humanDelay(200, 400);
-
-  // Ay select (0-indexed veya 1-indexed)
-  const monthSet = await page.evaluate((targetMonth, calSel, AYLAR) => {
-    const picker = document.querySelector(calSel);
-    if (!picker) return false;
-    const selects = picker.querySelectorAll('select');
-    for (const sel of selects) {
-      const opts = Array.from(sel.options);
-      // Ay ismi ile eşleş
-      const byName = opts.findIndex(o => AYLAR.includes(o.text.trim()) || AYLAR.includes(o.value));
-      if (byName >= 0) {
-        // 0-indexed: targetMonth-1, 1-indexed: targetMonth
-        const zeroOpt = opts.find(o => parseInt(o.value) === targetMonth - 1);
-        const oneOpt  = opts.find(o => parseInt(o.value) === targetMonth);
-        const nameOpt = opts.find(o => o.text.trim() === AYLAR[targetMonth]);
-        const target  = zeroOpt || nameOpt || oneOpt;
-        if (target) { sel.value = target.value; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; }
-      }
-    }
-    return false;
-  }, targetMonth, calSel, AYLAR);
-
-  if (monthSet) { await humanDelay(200, 400); return; }
-
-  // Dropdown çalışmadıysa — buton ile ilerle/geri git
-  logger.warn('navigateToMonth: dropdown bulunamadı, buton navigasyonu deneniyor');
-  for (let i = 0; i < 36; i++) {
-    const headerText = await page.evaluate((calSel) => {
-      const picker = document.querySelector(calSel);
-      return picker ? picker.textContent.substring(0, 80) : '';
-    }, calSel);
-
-    const currentMonth = AYLAR.findIndex(a => a && headerText.includes(a));
-    const yilMatch = headerText.match(/\d{4}/);
-    const currentYear = yilMatch ? parseInt(yilMatch[0]) : 0;
-    if (currentMonth > 0 && currentMonth === targetMonth && currentYear === targetYear) break;
-
-    const cur = currentYear * 12 + Math.max(currentMonth, 1);
-    const tgt = targetYear * 12 + targetMonth;
-
-    if (tgt > cur) {
-      await page.locator(calSel + ' button').last().click({ timeout: 1000 }).catch(() => {});
-    } else {
-      await page.locator(calSel + ' button').first().click({ timeout: 1000 }).catch(() => {});
-    }
+  if (monthSetResult.set) {
+    logger.info('navigateToMonth: ay seçildi → ' + AYLAR[targetMonth] + ' (value:' + monthSetResult.value + ')');
     await humanDelay(300, 500);
+  } else {
+    logger.warn('navigateToMonth: ay select bulunamadı');
+  }
+
+  // Step 2: Yıl kontrolü — ay select'in yanındaki metinden yılı oku
+  // Ardından prev/next butonlara bounding rect ile tıkla
+  for (let i = 0; i < 24; i++) {
+    const state = await page.evaluate(() => {
+      const TR_MONTHS = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran',
+                         'Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+      const sel = Array.from(document.querySelectorAll('select')).find(s => {
+        const opts = Array.from(s.options);
+        return opts.length >= 11 && opts.some(o => TR_MONTHS.includes(o.text.trim()));
+      });
+      if (!sel) return null;
+      const selRect = sel.getBoundingClientRect();
+      // Yıl: select'in parent container'ındaki 4 haneli sayı
+      let container = sel.parentElement;
+      let curYear = 0;
+      for (let j = 0; j < 5 && container; j++) {
+        const m = container.textContent.match(/\b(20\d{2})\b/);
+        if (m) { curYear = parseInt(m[1]); break; }
+        container = container.parentElement;
+      }
+      // Tüm butonlar arasında select'in solunda (prev) ve sağında (next) olanları bul
+      const allBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+        if (b.disabled) return false;
+        const r = b.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 &&
+               Math.abs(r.top + r.height / 2 - (selRect.top + selRect.height / 2)) < 40;
+      });
+      const prevBtn = allBtns.filter(b => b.getBoundingClientRect().right <= selRect.left)
+                              .sort((a,b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left)[0];
+      const nextBtn = allBtns.filter(b => b.getBoundingClientRect().left >= selRect.right)
+                              .sort((a,b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0];
+      return { curYear, hasPrev: !!prevBtn, hasNext: !!nextBtn };
+    });
+
+    if (!state) { logger.warn('navigateToMonth: calendar state okunamadı'); break; }
+    if (state.curYear === targetYear) break;
+
+    logger.info('navigateToMonth: curYear=' + state.curYear + ' → targetYear=' + targetYear + ' (iter ' + i + ')');
+
+    const goForward = targetYear > state.curYear;
+    const clicked = await page.evaluate((goForward) => {
+      const TR_MONTHS = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran',
+                         'Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+      const sel = Array.from(document.querySelectorAll('select')).find(s => {
+        const opts = Array.from(s.options);
+        return opts.length >= 11 && opts.some(o => TR_MONTHS.includes(o.text.trim()));
+      });
+      if (!sel) return false;
+      const selRect = sel.getBoundingClientRect();
+      const allBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+        if (b.disabled) return false;
+        const r = b.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 &&
+               Math.abs(r.top + r.height / 2 - (selRect.top + selRect.height / 2)) < 40;
+      });
+      let btn;
+      if (goForward) {
+        btn = allBtns.filter(b => b.getBoundingClientRect().left >= selRect.right)
+                     .sort((a,b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0];
+      } else {
+        btn = allBtns.filter(b => b.getBoundingClientRect().right <= selRect.left)
+                     .sort((a,b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left)[0];
+      }
+      if (btn) { btn.click(); return true; }
+      return false;
+    }, goForward);
+
+    if (!clicked) {
+      logger.warn('navigateToMonth: buton tıklanamadı (iter ' + i + ')');
+      break;
+    }
+    await humanDelay(350, 550);
   }
 }
 
-// Takvimde belirtilen güne tıkla (exact match, disabled/off olmayanlar)
+// Takvimde belirtilen güne tıkla
+// Calendar container'ı month select'in parent table'ından bulur (calSel bağımsız)
 async function clickDay(page, day) {
   const clicked = await page.evaluate((targetDay) => {
     const dayStr = String(targetDay);
-    // Olası selektörler: td, button, div, span ile gün hücreleri
-    const cells = Array.from(document.querySelectorAll(
-      'td, button, [class*="day"], [class*="date"], [class*="cell"]'
-    ));
+    const TR_MONTHS = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran',
+                       'Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+
+    // Month select'i bul → parent container'ını bul → içindeki table'ı bul
+    const monthSel = Array.from(document.querySelectorAll('select')).find(s => {
+      const opts = Array.from(s.options);
+      return opts.length >= 11 && opts.some(o => TR_MONTHS.includes(o.text.trim()));
+    });
+
+    let calTable = null;
+    if (monthSel) {
+      let el = monthSel.parentElement;
+      for (let i = 0; i < 6 && el; i++) {
+        const t = el.querySelector('table');
+        if (t) { calTable = t; break; }
+        el = el.parentElement;
+      }
+    }
+
+    // Calendar table içindeki hücreler
+    const searchRoot = calTable || document;
+    const cells = Array.from(searchRoot.querySelectorAll('td, [role="gridcell"], [class*="day"], button'));
 
     for (const cell of cells) {
-      const text = cell.textContent.trim();
-      if (text !== dayStr) continue;
-
-      // Disabled/off/other-month olan hücreleri atla
+      if (cell.textContent.trim() !== dayStr) continue;
       const cls = (cell.className || '').toString().toLowerCase();
       if (cls.includes('disabled') || cls.includes('off') ||
           cls.includes('other') || cls.includes('muted') ||
           cell.hasAttribute('disabled')) continue;
-
-      // Takvim popup içinde mi?
-      const inPicker = cell.closest(
-        '[class*="picker"], [class*="calendar"], [class*="daterange"], .datepicker'
-      );
-      if (!inPicker) continue;
-
+      // Main data table'dan ayırt et: ana tablo hücreleri çok fazla içerik içerir
+      if (!calTable) {
+        const parentTable = cell.closest('table');
+        if (parentTable && parentTable.querySelectorAll('td').length > 40) continue;
+      }
       cell.click();
       return true;
     }
@@ -267,16 +322,15 @@ async function clickDay(page, day) {
   }, day);
 
   if (!clicked) {
-    logger.warn('Gün tıklanamadı: ' + day + ', Playwright locator deneniyor...');
-    // Fallback: Playwright locator
+    logger.warn('clickDay: ' + day + ' bulunamadı, getByRole deneniyor...');
     try {
-      await page.locator(
-        `[class*="picker"] td:not(.disabled):not(.off), ` +
-        `[class*="calendar"] td:not(.disabled):not(.off), ` +
-        `[class*="picker"] [class*="day"]:not(.disabled):not(.off)`
-      ).filter({ hasText: new RegExp('^' + day + '$') }).first().click({ timeout: 3000 });
-    } catch(e) {
-      logger.warn('Gün locator hatası: ' + e.message);
+      await page.getByRole('gridcell', { name: String(day), exact: true }).first().click({ timeout: 2000 });
+    } catch {
+      try {
+        await page.locator('table td').filter({ hasText: new RegExp('^' + day + '$') }).first().click({ timeout: 2000 });
+      } catch(e) {
+        logger.warn('clickDay son hata: ' + e.message);
+      }
     }
   }
 }

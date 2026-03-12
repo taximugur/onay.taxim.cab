@@ -354,13 +354,18 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   }
 
   if (targetRefs) {
-    // Filtresiz tam portal listesi — page.goto ile filtre temizle (navigateToApprovalPage erken çıkıyor)
-    const base = new URL(page.url()).origin;
-    await page.goto(base + '/validation-waiting-records', { waitUntil: 'networkidle', timeout: 30000 });
-    // goto sonrası session kontrolü — login sayfasına yönlendirildiyse yeniden giriş
-    const urlAfterGoto = page.url();
-    if (urlAfterGoto.includes('login') || urlAfterGoto.includes('giris') || !urlAfterGoto.includes('validation')) {
-      logger.warn('sendBulkSMS: goto sonrası session koptu, yeniden login...');
+    // Filtresiz tam portal listesi
+    // page.goto KULLANMIYORUZ — SPA auth state'i (in-memory token) yok eder
+    // page.reload(): aynı URL yeniden yüklenir → cookies/localStorage korunur, React state (filtreler) sıfırlanır
+    const currentUrl = page.url();
+    if (!currentUrl.includes('validation-waiting-records')) {
+      await navigateToApprovalPage(page);
+    }
+    await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+    // reload sonrası session kontrolü
+    const urlAfterReload = page.url();
+    if (urlAfterReload.includes('login') || urlAfterReload.includes('giris') || !urlAfterReload.includes('validation')) {
+      logger.warn('sendBulkSMS: reload sonrası session koptu, yeniden login...');
       await refreshSession(page);
     }
   } else {

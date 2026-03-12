@@ -424,32 +424,79 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         continue;
       }
 
-      // Fresh Playwright Locator — React re-render sonrası bile çalışır
-      // waitFor ile render tamamlanana bekle (isVisible() gibi anlık kontrol değil)
-      const smsBtnLocator = page.locator('[class*="rdt_TableRow"]')
-        .filter({ hasText: ref })
-        .locator('.btn-primary, button')
-        .first();
-
+      // Her SMS öncesi tablo yüklenene bekle — React re-render (networkidle değil, satır varlığı)
       try {
-        await smsBtnLocator.waitFor({ state: 'visible', timeout: 5000 });
-      } catch {
-        skipped++;
-        logger.warn('SMS butonu yok: ' + ref);
-        if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
-        continue;
+        await page.waitForFunction(
+          () => document.querySelectorAll('[class*="rdt_TableRow"]').length > 0,
+          { timeout: 15000 }
+        );
+      } catch {}
+
+      // Adım 1: Satırda tıklanabilir buton var mı? (listener yok, henüz click yok)
+      const btnState = await page.evaluate((refNo) => {
+        const rows = document.querySelectorAll('[class*="rdt_TableRow"]');
+        for (const row of rows) {
+          const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
+          if (!cells[0] || cells[0].textContent.trim() !== refNo) continue;
+          const btns = row.querySelectorAll('button');
+          return Array.from(btns).some(b => !b.disabled && b.offsetParent !== null) ? 'has-btn' : 'no-btn';
+        }
+        return 'no-row';
+      }, ref).catch(() => 'no-row');
+
+      if (btnState !== 'has-btn') {
+        if (btnState === 'no-row') {
+          // Satır geçici kaybolmuş — networkidle bekle, tekrar dene
+          await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+          await page.waitForFunction(
+            () => document.querySelectorAll('[class*="rdt_TableRow"]').length > 0,
+            { timeout: 10000 }
+          ).catch(() => {});
+          const retryState = await page.evaluate((refNo) => {
+            const rows = document.querySelectorAll('[class*="rdt_TableRow"]');
+            for (const row of rows) {
+              const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
+              if (!cells[0] || cells[0].textContent.trim() !== refNo) continue;
+              const btns = row.querySelectorAll('button');
+              return Array.from(btns).some(b => !b.disabled && b.offsetParent !== null) ? 'has-btn' : 'no-btn';
+            }
+            return 'no-row';
+          }, ref).catch(() => 'no-row');
+          if (retryState !== 'has-btn') {
+            skipped++;
+            logger.warn('SMS butonu/satır yok [' + retryState + ']: ' + ref);
+            if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
+            continue;
+          }
+        } else {
+          skipped++;
+          logger.warn('SMS butonu yok: ' + ref);
+          if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
+          continue;
+        }
       }
 
-      try {
-        const [response] = await Promise.all([
-          page.waitForResponse(
-            r => r.url().includes('reSendSms') || r.url().includes('sendSms'),
-            { timeout: 10000 }
-          ).catch(() => null),
-          smsBtnLocator.click({ timeout: 5000 }),
-        ]);
+      // Adım 2: Response listener kur → evaluate ile tıkla (stale handle yok)
+      const responsePromise = page.waitForResponse(
+        r => r.url().includes('reSendSms') || r.url().includes('sendSms'),
+        { timeout: 12000 }
+      ).catch(() => null);
 
-        let success = false;
+      await page.evaluate((refNo) => {
+        const rows = document.querySelectorAll('[class*="rdt_TableRow"]');
+        for (const row of rows) {
+          const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
+          if (!cells[0] || cells[0].textContent.trim() !== refNo) continue;
+          const btns = row.querySelectorAll('button');
+          for (const btn of btns) {
+            if (!btn.disabled && btn.offsetParent !== null) { btn.click(); return; }
+          }
+        }
+      }, ref).catch(() => {});
+
+      let success = false;
+      try {
+        const response = await responsePromise;
         if (response) {
           try {
             const json = await response.json();
@@ -459,29 +506,39 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         } else {
           success = true;
         }
-
-        if (success) {
-          sent++;
-          await humanDelay(400, 600);
-          let sonKullanimTarihi = null, yeniGonderilenSms = gonderilenSms;
-          try {
-            const freshCells = await page.locator('[class*="rdt_TableRow"]')
-              .filter({ hasText: ref })
-              .locator('[class*="rdt_TableCell"]').all();
-            if (freshCells[9]) sonKullanimTarihi = ((await freshCells[9].textContent()) || '').trim() || null;
-            if (freshCells[6]) yeniGonderilenSms = parseInt(((await freshCells[6].textContent()) || '0').trim()) || gonderilenSms;
-          } catch {}
-          logger.info('SMS gönderildi: ' + ref + (sonKullanimTarihi ? ' | son: ' + sonKullanimTarihi : ''));
-          if (onProgress) onProgress({ ref, status: 'ok', gonderilenSms: yeniGonderilenSms, manuelLimit, sonKullanimTarihi, sent, skipped, failed, total: effectiveTotal });
-        } else {
-          failed++;
-          if (onProgress) onProgress({ ref, status: 'error', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
-          await humanDelay(400, 700);
-        }
       } catch(e) {
-        logger.warn('SMS tıklama hatası ' + ref + ': ' + e.message);
+        logger.warn('SMS response hatası ' + ref + ': ' + e.message);
+      }
+
+      if (success) {
+        sent++;
+        await humanDelay(400, 600);
+        let sonKullanimTarihi = null, yeniGonderilenSms = gonderilenSms;
+        try {
+          const freshData = await page.evaluate((refNo) => {
+            const rows = document.querySelectorAll('[class*="rdt_TableRow"]');
+            for (const row of rows) {
+              const cells = row.querySelectorAll('[class*="rdt_TableCell"]');
+              if (cells[0] && cells[0].textContent.trim() === refNo) {
+                return {
+                  gonderilenSms: cells[6] ? cells[6].textContent.trim() : '',
+                  sonKullanim: cells[9] ? cells[9].textContent.trim() : ''
+                };
+              }
+            }
+            return null;
+          }, ref);
+          if (freshData) {
+            sonKullanimTarihi = freshData.sonKullanim || null;
+            yeniGonderilenSms = parseInt(freshData.gonderilenSms) || gonderilenSms;
+          }
+        } catch {}
+        logger.info('SMS gönderildi: ' + ref + (sonKullanimTarihi ? ' | son: ' + sonKullanimTarihi : ''));
+        if (onProgress) onProgress({ ref, status: 'ok', gonderilenSms: yeniGonderilenSms, manuelLimit, sonKullanimTarihi, sent, skipped, failed, total: effectiveTotal });
+      } else {
         failed++;
-        if (onProgress) onProgress({ ref, status: 'error', error: e.message, gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
+        if (onProgress) onProgress({ ref, status: 'error', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
+        await humanDelay(400, 700);
       }
 
       if (sent + skipped + failed >= effectiveTotal) break pageLoop;

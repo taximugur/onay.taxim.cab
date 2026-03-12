@@ -10,6 +10,8 @@ class JobManager {
     this._paused = false;
     this._stopped = false;
     this._page = null;
+    this.lastSmsProgress = null; // Yeni bağlanan client'a son progress durumunu gönder
+    this.smsStartTime = null;
   }
 
   setPage(page) { this._page = page; }
@@ -128,6 +130,8 @@ class JobManager {
     this._stopped = false;
 
     const startTime = Date.now();
+    this.smsStartTime = startTime;
+    this.lastSmsProgress = null;
     this.bus.emit('status', { module: 'sms', state: 'running', startTime });
     this.bus.emit('sms:start', { filters });
     logger.info('SMS gönderimi başladı');
@@ -170,7 +174,7 @@ class JobManager {
             sonKullanimTarihi: prog.sonKullanimTarihi,
             error: prog.error,
           });
-          this.bus.emit('sms:progress', {
+          const progressData = {
             processed,
             success: prog.sent,
             failed: prog.failed,
@@ -179,7 +183,9 @@ class JobManager {
             percent: prog.total > 0 ? Math.round((processed / prog.total) * 100) : 0,
             rate: Math.round(rate),
             eta,
-          });
+          };
+          this.lastSmsProgress = progressData;
+          this.bus.emit('sms:progress', progressData);
         },
         // checkPauseStop
         () => this.checkPauseStop()

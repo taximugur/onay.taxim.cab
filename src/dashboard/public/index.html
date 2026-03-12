@@ -264,6 +264,18 @@ socket.on('init', (data) => {
   if (data.dbCount !== undefined) document.getElementById('sc-dbcount').textContent = fmt(data.dbCount);
   if (data.lastPage && data.totalPages) document.getElementById('sc-pages').textContent = data.lastPage + '/' + data.totalPages;
   if (data.startTime) { scStartTime = data.startTime; startScTimer(); }
+
+  // SMS devam ediyorsa sayaçları geri yükle (ekran kapanıp açılınca)
+  if (data.currentJob === 'sms' && data.lastSmsProgress) {
+    const p = data.lastSmsProgress;
+    document.getElementById('sms-processed').textContent = fmt(p.processed || 0);
+    document.getElementById('sms-success').textContent   = fmt(p.success   || 0);
+    document.getElementById('sms-failed').textContent    = fmt(p.failed    || 0);
+    document.getElementById('sms-bar').style.width       = (p.percent || 0) + '%';
+    document.getElementById('sms-pct').textContent       = (p.percent || 0) + '%';
+    if (p.rate && p.eta) document.getElementById('sms-rate-eta').textContent = p.rate + '/dk — ETA: ' + p.eta + 'dk';
+    addLog('sms-log', '↩ Yeniden bağlandı — ' + fmt(p.processed || 0) + '/' + fmt(p.totalCount || 0) + ' devam ediyor (' + (p.percent || 0) + '%)', 'info');
+  }
 });
 
 socket.on('status', (data) => {

@@ -63,7 +63,14 @@ function startDashboard(jobManager, eventBus, port) {
   // Socket.io commands
   io.on('connection', (socket) => {
     const s = getState();
-    socket.emit('init', { ...s, dbCount: getCount(), currentJob: jobManager.currentJob, paused: jobManager._paused });
+    socket.emit('init', {
+      ...s,
+      dbCount: getCount(),
+      currentJob: jobManager.currentJob,
+      paused: jobManager._paused,
+      lastSmsProgress: jobManager.lastSmsProgress,
+      smsStartTime: jobManager.smsStartTime,
+    });
 
     socket.on('scraper:start',  (opts) => jobManager.startScraper(opts && opts.fresh).catch(e => socket.emit('error', e.message)));
     socket.on('scraper:pause',  () => jobManager.pause());

@@ -5,6 +5,12 @@ const logger = require('./logger');
 
 async function waitForTable(page) {
   for (let i = 1; i <= 3; i++) {
+    // Session kontrolü: login sayfasına düştüysek önce refresh yap
+    const url = page.url();
+    if (url.includes('login') || url.includes('giris') || !url.includes('validation')) {
+      logger.warn('waitForTable: login sayfasına düşüldü, session yenileniyor...');
+      await refreshSession(page);
+    }
     try {
       await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 40000 });
       await humanDelay(400, 700);

@@ -423,17 +423,30 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         continue;
       }
 
-      // Locator ile taze sorgu — stale ElementHandle'dan kaçın
-      const smsBtnLocator = page.locator('[class*="rdt_TableRow"]')
-        .filter({ hasText: ref })
-        .locator('.btn-primary, button:has-text("SMS Gönder")')
-        .first();
-      const btnVisible = await smsBtnLocator.isVisible().catch(() => false);
-      if (!btnVisible) {
-        skipped++;
-        logger.warn('SMS butonu yok: ' + ref);
-        if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
-        continue;
+      // Butonu bul: önce row handle'dan direkt (en güvenilir), stale ise fresh locator
+      let clickFn = null;
+      try {
+        // row handle'dan direkt — global filter() arama sorununu bypass eder
+        const btnFromRow = await row.$('.btn-primary, button');
+        if (btnFromRow) {
+          clickFn = () => btnFromRow.click({ timeout: 5000 });
+        }
+      } catch {}
+
+      if (!clickFn) {
+        // Stale row → fresh page locator ile dene (geniş selector: herhangi bir button)
+        const freshLoc = page.locator('[class*="rdt_TableRow"]')
+          .filter({ hasText: ref })
+          .locator('button')
+          .last();
+        const btnVisible = await freshLoc.isVisible().catch(() => false);
+        if (!btnVisible) {
+          skipped++;
+          logger.warn('SMS butonu yok (gerçekten yok): ' + ref);
+          if (onProgress) onProgress({ ref, status: 'no-btn', gonderilenSms, manuelLimit, sent, skipped, failed, total: effectiveTotal });
+          continue;
+        }
+        clickFn = () => freshLoc.click({ timeout: 5000 });
       }
 
       try {
@@ -442,7 +455,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
             r => r.url().includes('reSendSms') || r.url().includes('sendSms'),
             { timeout: 10000 }
           ).catch(() => null),
-          smsBtnLocator.click({ timeout: 5000 }),
+          clickFn(),
         ]);
 
         let success = false;

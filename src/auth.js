@@ -108,18 +108,33 @@ async function refreshSession(page) {
 }
 
 async function navigateToApprovalPage(page) {
-  // Direkt URL ile git — menü tıklamaya gerek yok
-  const base = new URL(config.LOGIN_URL).origin;
-  const approvalUrl = base + '/validation-waiting-records';
-
   const current = page.url();
-  if (current.includes('validation-waiting-records')) {
-    // Zaten doğru sayfadayız
-    return;
+  if (current.includes('validation-waiting-records')) return;
+
+  // Menü tıklama — SPA içi navigasyon, auth state korunur (page.goto yapmıyoruz)
+  const menuSelectors = [
+    'a:has-text("Müşteri Onayı Bekleyenler")',
+    'a:has-text("Müşteri Onayı Bekleyen")',
+    '[href*="validation-waiting"]',
+    'span:has-text("Müşteri Onayı Bekleyen")',
+    'li:has-text("Müşteri Onayı Bekleyen")',
+  ];
+
+  for (const sel of menuSelectors) {
+    try {
+      await page.waitForSelector(sel, { timeout: 5000 });
+      await page.click(sel, { timeout: 3000 });
+      await page.waitForURL('**/validation-waiting-records**', { timeout: 10000 });
+      logger.info('Onay sayfasına gidildi (menü): ' + page.url());
+      return;
+    } catch {}
   }
 
-  await page.goto(approvalUrl, { waitUntil: 'networkidle', timeout: 30000 });
-  logger.info('Onay sayfasına gidildi: ' + approvalUrl);
+  // Fallback: direkt URL (son çare)
+  logger.warn('Menü linki bulunamadı, direkt URL deneniyor...');
+  const base = new URL(config.LOGIN_URL).origin;
+  await page.goto(base + '/validation-waiting-records', { waitUntil: 'networkidle', timeout: 30000 });
+  logger.info('Onay sayfasına gidildi (direkt URL): ' + page.url());
 }
 
 module.exports = { login, checkSession, refreshSession, navigateToApprovalPage };

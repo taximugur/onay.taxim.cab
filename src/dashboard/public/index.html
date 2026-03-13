@@ -172,16 +172,16 @@ input:focus,textarea:focus{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(
       <div class="card-title">Filtreler</div>
 
       <label class="field-label">Kayıt Tarihi — Başlangıç</label>
-      <input type="date" id="sms-kayit-start">
+      <input type="date" id="sms-kayit-start" min="2020-01-01" max="2030-12-31">
       <label class="field-label">Kayıt Tarihi — Bitiş</label>
-      <input type="date" id="sms-kayit-end">
+      <input type="date" id="sms-kayit-end" min="2020-01-01" max="2030-12-31">
 
       <div class="divider"></div>
 
       <label class="field-label">Son Kullanım — Başlangıç</label>
-      <input type="date" id="sms-son-start">
+      <input type="date" id="sms-son-start" min="2020-01-01" max="2030-12-31">
       <label class="field-label">Son Kullanım — Bitiş</label>
-      <input type="date" id="sms-son-end">
+      <input type="date" id="sms-son-end" min="2020-01-01" max="2030-12-31">
 
       <div class="divider"></div>
 
@@ -427,21 +427,25 @@ function updateScraperUI(state) {
 
 // ─── SMS controls ────────────────────────────────────────────────────────────
 function smsCount() {
+  const filters = getSmsFilters();
+  if (!filters) return;
   const btn = document.getElementById('btn-sms-count');
   btn.disabled = true;
   btn.textContent = '⏳ Portalda aranıyor...';
   document.getElementById('sms-count-result').classList.remove('show');
   addLog('sms-log', 'Filtreler portal\'a uygulanıyor...', 'info');
-  socket.emit('sms:count', getSmsFilters());
+  socket.emit('sms:count', filters);
 }
 
 function smsStart() {
+  const filters = getSmsFilters();
+  if (!filters) return;
   const msg = portalCount > 0
     ? fmt(portalCount) + ' kayda SMS gönderilecek. Emin misiniz?'
     : 'Filtrelere göre SMS gönderimi başlatılacak. Emin misiniz?';
   if (!confirm(msg)) return;
   updateSmsUI('running'); // Durdur butonunu hemen aktif et — sunucu onayı bekleme
-  socket.emit('sms:start', getSmsFilters());
+  socket.emit('sms:start', filters);
 }
 
 function smsPauseResume() {
@@ -467,6 +471,17 @@ function updateSmsUI(state) {
 }
 
 function getSmsFilters() {
+  const fields = ['sms-kayit-start','sms-kayit-end','sms-son-start','sms-son-end'];
+  for (const id of fields) {
+    const val = document.getElementById(id).value;
+    if (val) {
+      const y = parseInt(val.split('-')[0]);
+      if (isNaN(y) || y < 2020 || y > 2030) {
+        alert('Geçersiz tarih: ' + val + '\nLütfen alanı temizleyip tekrar girin (YYYY-MM-DD formatında).');
+        return null;
+      }
+    }
+  }
   return {
     kayitStart: document.getElementById('sms-kayit-start').value,
     kayitEnd:   document.getElementById('sms-kayit-end').value,

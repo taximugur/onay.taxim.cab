@@ -81,8 +81,13 @@ async function login(page) {
     await page.keyboard.press('Enter');
   }
 
-  // Dashboard yüklenene bekle
-  await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 });
+  // Dashboard yüklenene bekle — networkidle yerine load (SPA sürekli request yapar, networkidle timeout olur)
+  await page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(async () => {
+    // load da gelmezse URL'e bak — portal'a ulaştıysak yeterli
+    const url = page.url();
+    if (!url.includes('login') && !url.includes('signin')) return; // OK
+    throw new Error('Login sonrası navigasyon timeout: ' + url);
+  });
   await page.screenshot({ path: path.join('screenshots', 'after-login.png') });
   logger.info('Login sonrası screenshot: screenshots/after-login.png');
 

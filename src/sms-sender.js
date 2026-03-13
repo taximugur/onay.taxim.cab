@@ -631,7 +631,7 @@ async function _applyDateFilterToPortal(page, startISO, endISO) {
   if (!currentUrl.includes('validation-waiting-records')) {
     await navigateToApprovalPage(page);
   }
-  await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+  await page.reload({ waitUntil: 'load', timeout: 30000 }).catch(() => {});
   const urlAfterReload = page.url();
   if (urlAfterReload.includes('login') || !urlAfterReload.includes('validation')) {
     await refreshSession(page);

@@ -5,7 +5,7 @@ const path = require('path');
 
 async function login(page) {
   logger.info('Login sayfasına gidiliyor...');
-  await page.goto(config.LOGIN_URL, { waitUntil: 'networkidle', timeout: 30000 });
+  await page.goto(config.LOGIN_URL, { waitUntil: 'load', timeout: 30000 });
 
   // Screenshot al — selector'leri belirlemek için
   await page.screenshot({ path: path.join('screenshots', 'login-page.png') });
@@ -138,7 +138,7 @@ async function navigateToApprovalPage(page) {
   // Fallback: direkt URL (son çare)
   logger.warn('Menü linki bulunamadı, direkt URL deneniyor...');
   const base = new URL(config.LOGIN_URL).origin;
-  await page.goto(base + '/validation-waiting-records', { waitUntil: 'networkidle', timeout: 30000 });
+  await page.goto(base + '/validation-waiting-records', { waitUntil: 'load', timeout: 30000 });
   logger.info('Onay sayfasına gidildi (direkt URL): ' + page.url());
 }
 

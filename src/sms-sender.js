@@ -344,11 +344,13 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   await humanDelay(1500, 2000);
   await page.waitForSelector('[class*="rdt_Pagination"]', { timeout: 10000 }).catch(() => {});
 
-  const totalPages = await _getTotalPages(page);
   const portalTotal = await _getTotalCount(page);
+  // targetRefs varsa portal sayfa sayısına güvenme (portal yanlış sayfa sayısı döndürebilir)
+  // _clickNext false döndürünce doğal son; yoksa 9999 ile tüm sayfaları tara
+  const totalPages = targetRefs ? 9999 : await _getTotalPages(page);
   // effectiveTotal: DB sayısını baz al, erken break önlenir; portalTotal log için
   const effectiveTotal = targetRefs ? targetRefs.size : (portalTotal || 99999);
-  logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt (portal=' + portalTotal + '), ' + totalPages + ' sayfa');
+  logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt (portal=' + portalTotal + '), maxSayfa=' + totalPages);
 
   const processedRefs = new Set();
 

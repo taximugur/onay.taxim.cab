@@ -138,12 +138,18 @@ function updateAfterSMS(referansNo, sonKullanimTarihi) {
 }
 
 // Bu sistemle daha önce (herhangi bir günde) başarıyla SMS gönderilmiş TÜM ref'leri döner (Set)
-// Bir kez SMS gönderildi mi, bir daha gönderilmez
 function getTodayBlockedRefs() {
   const rows = db.prepare(`
-    SELECT DISTINCT referansNo
-    FROM sms_log
-    WHERE durum = 'ok'
+    SELECT DISTINCT referansNo FROM sms_log WHERE durum = 'ok'
+  `).all();
+  return new Set(rows.map(r => r.referansNo));
+}
+
+// Yalnızca bugün SMS gönderilmiş ref'leri döner (Set)
+function getTodayOnlyBlockedRefs() {
+  const rows = db.prepare(`
+    SELECT DISTINCT referansNo FROM sms_log
+    WHERE durum = 'ok' AND date(tarih) = date('now', 'localtime')
   `).all();
   return new Set(rows.map(r => r.referansNo));
 }
@@ -174,4 +180,4 @@ function countByDateRange(startISO, endISO) {
   ).get(startISO, endISO).n;
 }
 
-module.exports = { bulkInsert, getState, setState, getCount, queryRecords, logSMS, updateAfterSMS, getTodayBlockedRefs, getRefsByDateRange, countByDateRange, db };
+module.exports = { bulkInsert, getState, setState, getCount, queryRecords, logSMS, updateAfterSMS, getTodayBlockedRefs, getTodayOnlyBlockedRefs, getRefsByDateRange, countByDateRange, db };

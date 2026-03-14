@@ -76,7 +76,7 @@ header h1{font-size:16px;font-weight:700;flex:1}
 
 /* Forms */
 label.field-label{display:block;font-size:12px;color:#666;margin:10px 0 3px}
-input[type="date"],input[type="text"],textarea{width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:13px;outline:none;transition:border .15s}
+input[type="date"],input[type="text"],textarea,select{width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:13px;outline:none;transition:border .15s}
 input:focus,textarea:focus{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(251,206,7,.2)}
 .filter-result{background:#f0fdf4;border:1px solid #86efac;border-radius:7px;padding:10px 14px;font-size:13px;margin:10px 0;display:none}
 .filter-result.show{display:block}
@@ -188,10 +188,12 @@ input:focus,textarea:focus{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(
       <label class="field-label">Arama (isim, plaka, GSM, referans)</label>
       <input type="text" id="sms-search" placeholder="...">
 
-      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;cursor:pointer;color:#555">
-        <input type="checkbox" id="sms-resend" style="width:15px;height:15px;cursor:pointer">
-        Daha önce gönderilenlere de gönder
-      </label>
+      <label class="field-label">Gönderim modu</label>
+      <select id="sms-blockmode">
+        <option value="all">Daha önce gönderilenler atlanır (varsayılan)</option>
+        <option value="today">Yalnızca bugün gönderilenler atlanır</option>
+        <option value="none">Tümüne gönder (öncekiler dahil)</option>
+      </select>
 
       <div class="btn-row" style="margin-top:12px">
         <button class="btn btn-blue" id="btn-sms-count" onclick="smsCount()">🔍 Filtrele ve Say</button>
@@ -493,7 +495,7 @@ function getSmsFilters() {
     sonStart:   document.getElementById('sms-son-start').value,
     sonEnd:     document.getElementById('sms-son-end').value,
     search:     document.getElementById('sms-search').value,
-    resend:     document.getElementById('sms-resend').checked,
+    blockMode:  document.getElementById('sms-blockmode').value,
   };
 }
 

@@ -353,15 +353,30 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
     logger.info('DB filtresi aktif: ' + targetRefs.size + ' hedef ref (' + filters.kayitStart + ' — ' + filters.kayitEnd + ')');
   }
 
-  // Portal'a date filtresi uygula (tarih aralığı varsa) → 18K yerine ~7K kayıt taranır
-  // Bu sayede re-sort etkisi azalır ve tüm hedef kayıtlar görünür
-  if (filters && filters.kayitStart && filters.kayitEnd) {
-    await _applyDateFilterToPortal(page, filters.kayitStart, filters.kayitEnd);
-  } else {
-    await applyPortalFilters(page, filters || {});
+  // Portal date filtresi kaldırıldı — page.reload() SPA sessionStorage'ı temizliyor, session kopuyor.
+  // targetRefs (DB filtresi) doğruluğu garanti eder; portal tüm kayıtları gösterir, biz DB ile filtreleriz.
+  await navigateToApprovalPage(page);
+
+  // Session kontrolü
+  {
+    const url = page.url();
+    if (url.includes('login') || !url.includes('validation')) {
+      logger.warn('Navigasyon sonrası session kopuk, kurtarma...');
+      await refreshSession(page);
+    }
   }
 
-  await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 60000 });
+  // Tablo yüklenene bekle
+  await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 60000 }).catch(async () => {
+    const url = page.url();
+    if (url.includes('login') || !url.includes('validation')) {
+      await refreshSession(page);
+      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 }).catch(() => {});
+    }
+  });
+
+  // Stabil sıralama: referansNo sütununa tıkla (re-sort drift önler)
+  await _applyStableSort(page);
 
   const totalPages = await _getTotalPages(page);
   const portalTotal = await _getTotalCount(page);
@@ -501,16 +516,12 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
         logger.warn('SMS response hatası ' + ref + ': ' + e.message);
       }
 
-      // 401: session expire — yeniden login + filter + sayfa 1'den yeniden tara
+      // 401: session expire — yeniden login, sayfa 1'den yeniden tara
       if (session401) {
         logger.warn('Session yenileniyor, sayfa 1\'den yeniden tarama başlıyor...');
         processedRefs.delete(ref); // bu ref'i yeniden dene
         await refreshSession(page);
-        if (filters && filters.kayitStart && filters.kayitEnd) {
-          await _applyDateFilterToPortal(page, filters.kayitStart, filters.kayitEnd);
-        } else {
-          await navigateToApprovalPage(page);
-        }
+        await _applyStableSort(page);
         pageNum = 0; // for loop increment → 1, portal da page 1'de
         break; // inner loop'tan çık → outer continue ile page 1'den devam
       }
@@ -562,11 +573,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       if (urlFail.includes('login') || !urlFail.includes('validation')) {
         logger.warn('_clickNext: session koptu (sayfa ' + pageNum + '), kurtarma + sayfa 1\'den devam...');
         await refreshSession(page);
-        if (filters && filters.kayitStart && filters.kayitEnd) {
-          await _applyDateFilterToPortal(page, filters.kayitStart, filters.kayitEnd);
-        } else {
-          await navigateToApprovalPage(page);
-        }
+        await _applyStableSort(page);
         pageNum = 0; // increment → 1, portal page 1'de
         continue;
       }
@@ -703,6 +710,26 @@ async function _applyDateFilterToPortal(page, startISO, endISO) {
       await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 10000 }).catch(() => {});
     } else {
       logger.warn('Stabil sıralama: sütun başlığı bulunamadı');
+    }
+  } catch(e) {
+    logger.warn('Stabil sıralama hatası: ' + e.message);
+  }
+}
+
+async function _applyStableSort(page) {
+  try {
+    await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 10000 }).catch(() => {});
+    const sorted = await page.evaluate(() => {
+      const headers = Array.from(document.querySelectorAll('[class*="rdt_TableCol"]'));
+      if (headers.length === 0) return false;
+      const clickable = headers[0].querySelector('[role="button"], [class*="rdt_TableCol_Sortable"], div[tabindex]') || headers[0];
+      clickable.click();
+      return true;
+    });
+    if (sorted) {
+      logger.info('Stabil sıralama uygulandı (referansNo)');
+      await humanDelay(800, 1200);
+      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 10000 }).catch(() => {});
     }
   } catch(e) {
     logger.warn('Stabil sıralama hatası: ' + e.message);

@@ -24,12 +24,16 @@ async function shot(page, name) {
  * filters: { kayitStart, kayitEnd, search }  (tarihler YYYY-MM-DD formatında)
  */
 async function applyPortalFilters(page, filters = {}, _retry = 0) {
-  // Tarih filtresi varsa — DB'den gerçekçi sayı hesapla:
-  // (tarih aralığındaki toplam) - (daha önce bu sistemden SMS gönderilmiş olanlar)
+  // Tarih filtresi varsa — DB'den gerçekçi sayı hesapla
   if (filters.kayitStart && filters.kayitEnd) {
     const { getRefsByDateRange, getTodayBlockedRefs } = require('./db');
-    const rangeRefs  = getRefsByDateRange(filters.kayitStart, filters.kayitEnd);
-    const blocked    = getTodayBlockedRefs(); // tüm zamanlar SMS gönderilmiş
+    const rangeRefs = getRefsByDateRange(filters.kayitStart, filters.kayitEnd);
+    if (filters.resend) {
+      // Tekrar gönderim modu: daha önce gönderilenler dahil → tüm DB aralığı
+      logger.info('Sayım (resend): DB aralık=' + rangeRefs.size);
+      return rangeRefs.size;
+    }
+    const blocked      = getTodayBlockedRefs();
     const stillPending = [...rangeRefs].filter(r => !blocked.has(r)).length;
     logger.info('Sayım: DB aralık=' + rangeRefs.size + ', zaten gönderilmiş=' + (rangeRefs.size - stillPending) + ', bekleyen=' + stillPending);
     return stillPending;

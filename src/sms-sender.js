@@ -184,92 +184,53 @@ async function applyPortalFilters(page, filters = {}, _retry = 0) {
 // Tüm DOM işlemleri tek page.evaluate çağrısı ile — Playwright boundingBox yerine
 // getBoundingClientRect() kullanılır. Single-arg wrapped object ile "Too many arguments" yok.
 async function navigateToMonth(page, targetMonth, targetYear) {
-  // Mevcut ay/yıl oku (no-arg evaluate)
+  // Flatpickr: ay select + yıl input ayrı elementlerde
   const state = await page.evaluate(() => {
-    const TR_RX = /^(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)$/;
-    const sel = Array.from(document.querySelectorAll('select'))
-      .find(s => Array.from(s.options).some(o => TR_RX.test(o.text.trim())));
-    if (!sel) return null;
-    // Seçili option'ın text'inden ay
-    const selOpt = sel.options[sel.selectedIndex];
-    const monthText = selOpt ? selOpt.text.trim() : '';
-    const MONTHS = ['','Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
-    const curMonth = MONTHS.indexOf(monthText);
-    // Yıl: select'in parent tree'sinden bul
-    let el = sel.parentElement;
-    let curYear = 0;
-    for (let i = 0; i < 8 && el; i++) {
-      const m = el.textContent.match(/\b(20\d{2})\b/);
-      if (m) { curYear = parseInt(m[1]); break; }
-      el = el.parentElement;
-    }
+    const monthSel = document.querySelector('select.flatpickr-monthDropdown-months');
+    const yearInput = document.querySelector('input.flatpickr-year, input.numInput, .numInputWrapper input[type="number"]');
+    if (!monthSel || !yearInput) return null;
+    // flatpickr value: 0=Ocak … 11=Aralık
+    const curMonth = parseInt(monthSel.value) + 1;
+    const curYear  = parseInt(yearInput.value);
     return { curMonth, curYear };
   });
 
-  if (!state) { logger.warn('navigateToMonth: calendar state okunamadı'); return; }
+  if (!state) { logger.warn('navigateToMonth: flatpickr state okunamadı'); return; }
 
   const { curMonth, curYear } = state;
-  logger.info('navigateToMonth: ' + (AYLAR[curMonth]||curMonth) + ' ' + (curYear||'?') +
+  logger.info('navigateToMonth: ' + (AYLAR[curMonth]||curMonth) + ' ' + curYear +
               ' → ' + AYLAR[targetMonth] + ' ' + targetYear);
 
-  const delta = (targetYear * 12 + targetMonth) - ((curYear || 2026) * 12 + (curMonth || 3));
+  const delta = (targetYear * 12 + targetMonth) - (curYear * 12 + curMonth);
   if (delta === 0) return;
 
-  const steps    = Math.abs(delta);
-  const goFwd    = delta > 0;
+  const steps = Math.abs(delta);
+  const goFwd = delta > 0;
 
   for (let i = 0; i < steps; i++) {
-    // Her adımda DOM içinde getBoundingClientRect ile buton bul ve tıkla
     const clicked = await page.evaluate(({ goFwd }) => {
-      const TR_RX = /^(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)$/;
-      const sel = Array.from(document.querySelectorAll('select'))
-        .find(s => Array.from(s.options).some(o => TR_RX.test(o.text.trim())));
-      if (!sel) return false;
-      const sr = sel.getBoundingClientRect();
-      const buttons = Array.from(document.querySelectorAll('button'));
-      let best = null, bestDist = Infinity;
-      for (const btn of buttons) {
-        const r = btn.getBoundingClientRect();
-        if (!r.width || !r.height) continue;
-        const vd = Math.abs((r.top + r.height / 2) - (sr.top + sr.height / 2));
-        if (vd > 60) continue;
-        let d;
-        if (goFwd  && r.left  >= sr.right - 5)  d = r.left  - sr.right;
-        else if (!goFwd && r.right <= sr.left  + 5)  d = sr.left  - r.right;
-        else continue;
-        if (d >= 0 && d < bestDist) { bestDist = d; best = btn; }
-      }
-      if (best) { best.click(); return true; }
-      // Debug: log what we found
-      const near = buttons.filter(b => {
-        const r = b.getBoundingClientRect();
-        return r.width > 0 && Math.abs((r.top + r.height/2) - (sr.top + sr.height/2)) < 60;
-      }).map(b => ({ text: b.textContent.trim().slice(0,10), left: Math.round(b.getBoundingClientRect().left), right: Math.round(b.getBoundingClientRect().right) }));
-      console.log('NAV_BTN_DEBUG selRight=' + Math.round(sr.right) + ' selLeft=' + Math.round(sr.left) + ' nearBtns=' + JSON.stringify(near));
+      // Flatpickr prev/next okları span element
+      const sel = goFwd
+        ? document.querySelector('.flatpickr-next-month, [class*="nextMonth"], [class*="next-month"]')
+        : document.querySelector('.flatpickr-prev-month, [class*="prevMonth"], [class*="prev-month"]');
+      if (sel) { sel.click(); return true; }
       return false;
     }, { goFwd });
 
     if (!clicked) {
-      logger.warn('navigateToMonth: buton tıklanamadı (adım ' + (i+1) + '/' + steps + ')');
+      logger.warn('navigateToMonth: ok tıklanamadı (adım ' + (i+1) + '/' + steps + ')');
       break;
     }
-    await humanDelay(300, 450);
+    await humanDelay(250, 400);
   }
 
   // Sonuç log
   const final = await page.evaluate(() => {
-    const TR_RX = /^(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)$/;
-    const sel = Array.from(document.querySelectorAll('select'))
-      .find(s => Array.from(s.options).some(o => TR_RX.test(o.text.trim())));
-    if (!sel) return null;
-    const selOpt = sel.options[sel.selectedIndex];
-    let el = sel.parentElement, yr = 0;
-    for (let i = 0; i < 8 && el; i++) {
-      const m = el.textContent.match(/\b(20\d{2})\b/);
-      if (m) { yr = parseInt(m[1]); break; }
-      el = el.parentElement;
-    }
-    return { month: selOpt ? selOpt.text.trim() : '?', year: yr };
+    const monthSel  = document.querySelector('select.flatpickr-monthDropdown-months');
+    const yearInput = document.querySelector('input.flatpickr-year, input.numInput, .numInputWrapper input[type="number"]');
+    if (!monthSel || !yearInput) return null;
+    const MONTHS = ['','Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+    return { month: MONTHS[parseInt(monthSel.value)+1] || '?', year: parseInt(yearInput.value) };
   });
   if (final) logger.info('navigateToMonth: sonuç → ' + final.month + ' ' + final.year);
 }
@@ -279,11 +240,18 @@ async function navigateToMonth(page, targetMonth, targetYear) {
 async function clickDay(page, day) {
   const clicked = await page.evaluate(({ day }) => {
     const dayStr = String(day);
-    const TR_RX = /^(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)$/;
-    const sel = Array.from(document.querySelectorAll('select'))
-      .find(s => Array.from(s.options).some(o => TR_RX.test(o.text.trim())));
-    const sr = sel ? sel.getBoundingClientRect() : null;
 
+    // Flatpickr: span.flatpickr-day (önce dene)
+    const fpDays = document.querySelectorAll('span.flatpickr-day');
+    for (const el of fpDays) {
+      if (el.textContent.trim() !== dayStr) continue;
+      const cls = el.className || '';
+      if (cls.includes('disabled') || cls.includes('prevMonth') || cls.includes('nextMonth')) continue;
+      el.click();
+      return true;
+    }
+
+    // Fallback: td, gridcell
     const cells = Array.from(document.querySelectorAll('td, [role="gridcell"]'));
     for (const cell of cells) {
       if (cell.textContent.trim() !== dayStr) continue;
@@ -291,11 +259,6 @@ async function clickDay(page, day) {
       if (cls.includes('disabled') || cls.includes('off') ||
           cls.includes('other') || cls.includes('muted') ||
           cell.hasAttribute('disabled')) continue;
-      if (sr) {
-        const r = cell.getBoundingClientRect();
-        if (r.top < sr.top) continue;            // select'in üstünde → takvim dışı
-        if (Math.abs(r.left - sr.left) > 350) continue; // çok uzakta → ana tablo
-      }
       cell.click();
       return true;
     }

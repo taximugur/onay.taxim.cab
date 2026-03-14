@@ -20,6 +20,7 @@ class JobManager {
     this._page = null;
     this.lastSmsProgress = null; // Yeni bağlanan client'a son progress durumunu gönder
     this.smsStartTime = null;
+    this._smsEventBuffer = []; // Disconnect sırasında kaçırılan sms:sent eventleri
   }
 
   setPage(page) { this._page = page; }
@@ -172,7 +173,7 @@ class JobManager {
             });
           } catch(e) { logger.warn('logSMS DB hatası: ' + e.message); }
 
-          this.bus.emit('sms:sent', {
+          const sentEvent = {
             ref: prog.ref,
             status: prog.status,
             processed,
@@ -181,7 +182,11 @@ class JobManager {
             manuelLimit: prog.manuelLimit,
             sonKullanimTarihi: prog.sonKullanimTarihi,
             error: prog.error,
-          });
+          };
+          // Buffer'a ekle (son 200 event — reconnect'te replay için)
+          this._smsEventBuffer.push(sentEvent);
+          if (this._smsEventBuffer.length > 200) this._smsEventBuffer.shift();
+          this.bus.emit('sms:sent', sentEvent);
           const progressData = {
             processed,
             success: prog.sent,
@@ -200,6 +205,7 @@ class JobManager {
       );
 
       const duration = Date.now() - startTime;
+      this._smsEventBuffer = [];
       this.bus.emit('sms:done', {
         processed: result.sent + result.skipped + result.failed,
         success: result.sent,

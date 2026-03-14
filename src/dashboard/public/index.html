@@ -284,6 +284,29 @@ socket.on('init', (data) => {
     document.getElementById('sms-pct').textContent       = (p.percent || 0) + '%';
     if (p.rate && p.eta) document.getElementById('sms-rate-eta').textContent = p.rate + '/dk — ETA: ' + p.eta + 'dk';
     addLog('sms-log', '↩ Yeniden bağlandı — ' + fmt(p.processed || 0) + '/' + fmt(p.totalCount || 0) + ' devam ediyor (' + (p.percent || 0) + '%)', 'info');
+
+    // Kaçırılan sms:sent eventlerini logda göster (en eski → en yeni sırası)
+    const buf = data.smsEventBuffer || [];
+    if (buf.length) {
+      addLog('sms-log', '— disconnect sırasında ' + buf.length + ' event kaçırıldı, aşağıda gösteriliyor —', 'warn');
+      // addLog başa ekliyor, eski eventleri doğru sırada göstermek için tersten ekle
+      for (let i = buf.length - 1; i >= 0; i--) {
+        const d = buf[i];
+        const pos = (d.processed && d.totalCount) ? '[' + fmt(d.processed) + '/' + fmt(d.totalCount) + '] ' : '';
+        let msg, cls;
+        if (d.status === 'ok') {
+          const s = d.sonKullanimTarihi ? ' · son: ' + d.sonKullanimTarihi : '';
+          msg = '✓ ' + pos + d.ref + ' — gönderildi' + s; cls = 'ok';
+        } else if (d.status === 'daily-limit') {
+          msg = '⛔ ' + pos + d.ref + ' — daha önce gönderildi'; cls = 'warn';
+        } else if (d.status === 'limit') {
+          msg = '⏭ ' + pos + d.ref + ' — limit dolu (' + d.gonderilenSms + '/' + d.manuelLimit + ')'; cls = 'warn';
+        } else {
+          msg = '✗ ' + pos + d.ref + ' — hata' + (d.error ? ': ' + d.error : ''); cls = 'err';
+        }
+        addLog('sms-log', msg, cls);
+      }
+    }
   }
 });
 

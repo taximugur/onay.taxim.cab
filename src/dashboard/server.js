@@ -71,6 +71,7 @@ function startDashboard(jobManager, eventBus, port) {
       paused: jobManager._paused,
       lastSmsProgress: jobManager.lastSmsProgress,
       smsStartTime: jobManager.smsStartTime,
+      smsEventBuffer: jobManager._smsEventBuffer || [],
     });
 
     socket.on('disconnect', (reason) => {

@@ -121,12 +121,9 @@ async function applyPortalFilters(page, filters = {}, _retry = 0) {
       await humanDelay(500, 800);
       await shot(page, '4-end-selected');
 
-      // Takvim kapanmadıysa Escape ile kapat
-      const calStillOpen = await page.$(calSel).catch(() => null);
-      if (calStillOpen) {
-        await page.keyboard.press('Escape');
-        await humanDelay(300, 500);
-      }
+      // Takvim hala açıksa Escape ile kapat
+      await page.keyboard.press('Escape');
+      await humanDelay(300, 500);
 
       logger.info('Tarih filtresi uygulandı: ' + filters.kayitStart + ' — ' + filters.kayitEnd);
     } catch(e) {

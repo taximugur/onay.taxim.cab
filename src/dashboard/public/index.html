@@ -188,6 +188,11 @@ input:focus,textarea:focus{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(
       <label class="field-label">Arama (isim, plaka, GSM, referans)</label>
       <input type="text" id="sms-search" placeholder="...">
 
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;cursor:pointer;color:#555">
+        <input type="checkbox" id="sms-resend" style="width:15px;height:15px;cursor:pointer">
+        Daha önce gönderilenlere de gönder
+      </label>
+
       <div class="btn-row" style="margin-top:12px">
         <button class="btn btn-blue" id="btn-sms-count" onclick="smsCount()">🔍 Filtrele ve Say</button>
       </div>
@@ -488,6 +493,7 @@ function getSmsFilters() {
     sonStart:   document.getElementById('sms-son-start').value,
     sonEnd:     document.getElementById('sms-son-end').value,
     search:     document.getElementById('sms-search').value,
+    resend:     document.getElementById('sms-resend').checked,
   };
 }
 

@@ -344,8 +344,10 @@ async function _getTotalCount(page) {
 async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   let sent = 0, skipped = 0, failed = 0;
   const { getTodayBlockedRefs, getRefsByDateRange } = require('./db');
-  const blockedRefs = getTodayBlockedRefs();
-  if (blockedRefs.size > 0) logger.info('Daha önce SMS gönderilmiş: ' + blockedRefs.size + ' ref atlanacak');
+  const resend = !!(filters && filters.resend);
+  const blockedRefs = resend ? new Set() : getTodayBlockedRefs();
+  if (!resend && blockedRefs.size > 0) logger.info('Daha önce SMS gönderilmiş: ' + blockedRefs.size + ' ref atlanacak');
+  if (resend) logger.info('Tekrar gönderim modu aktif — daha önce gönderilenler de dahil');
 
   let targetRefs = null;
   if (filters && filters.kayitStart && filters.kayitEnd) {

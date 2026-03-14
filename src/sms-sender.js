@@ -345,7 +345,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   let sent = 0, skipped = 0, failed = 0;
   const { getTodayBlockedRefs, getRefsByDateRange } = require('./db');
   const blockedRefs = getTodayBlockedRefs();
-  if (blockedRefs.size > 0) logger.info('Bugün limit dolmuş (1x): ' + blockedRefs.size + ' ref atlanacak');
+  if (blockedRefs.size > 0) logger.info('Daha önce SMS gönderilmiş: ' + blockedRefs.size + ' ref atlanacak');
 
   let targetRefs = null;
   if (filters && filters.kayitStart && filters.kayitEnd) {
@@ -423,7 +423,7 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
       if (blockedRefs.has(ref)) {
         processedRefs.add(ref);
         skipped++;
-        logger.info('Günlük limit (1x): ' + ref + ' atlandı');
+        logger.info('Daha önce gönderildi: ' + ref + ' atlandı');
         if (onProgress) onProgress({ ref, status: 'daily-limit', gonderilenSms: 0, manuelLimit: 0, sent, skipped, failed, total: effectiveTotal });
         continue;
       }

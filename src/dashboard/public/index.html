@@ -368,7 +368,7 @@ socket.on('sms:sent', (d) => {
     msg = `⏭ ${pos}${d.ref} — limit dolu (${d.gonderilenSms}/${d.manuelLimit})`;
     cls = 'warn';
   } else if (d.status === 'daily-limit') {
-    msg = `⛔ ${pos}${d.ref} — günlük limit (bugün 2x gönderildi)`;
+    msg = `⛔ ${pos}${d.ref} — daha önce gönderildi`;
     cls = 'warn';
   } else if (d.status === 'no-btn') {
     msg = `⏭ ${pos}${d.ref} — SMS butonu yok (hiç gönderilmemiş)`;

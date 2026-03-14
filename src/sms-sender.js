@@ -332,11 +332,15 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   // Stabil sıralama: referansNo sütununa tıkla (re-sort drift önler)
   await _applyStableSort(page);
 
+  // Sıralama sonrası portal pagination stabilize olana bekle
+  await humanDelay(1500, 2000);
+  await page.waitForSelector('[class*="rdt_Pagination"]', { timeout: 10000 }).catch(() => {});
+
   const totalPages = await _getTotalPages(page);
   const portalTotal = await _getTotalCount(page);
-  // effectiveTotal: portalın alt kısmında gözüken gerçek sayı
-  const effectiveTotal = portalTotal || (targetRefs ? targetRefs.size : 0);
-  logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt, portal=' + portalTotal + ', ' + totalPages + ' sayfa');
+  // effectiveTotal: DB sayısını baz al, erken break önlenir; portalTotal log için
+  const effectiveTotal = targetRefs ? targetRefs.size : (portalTotal || 99999);
+  logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt (portal=' + portalTotal + '), ' + totalPages + ' sayfa');
 
   const processedRefs = new Set();
 

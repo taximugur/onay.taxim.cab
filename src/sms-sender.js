@@ -277,6 +277,34 @@ async function clickDay(page, day) {
   }
 }
 
+// ─── Reality Checker: Pre-flight gate ────────────────────────────────────────
+// agency-agents/testing-reality-checker.md pattern:
+// "Defaults to NEEDS WORK — requires overwhelming proof before proceeding"
+async function _preFlightCheck(page, targetRefs, portalTotal) {
+  const warnings = [];
+
+  if (!portalTotal || portalTotal === 0) {
+    warnings.push('portalTotal=0 — filtre uygulanmadı veya portal boş');
+  }
+  if (portalTotal > 100000) {
+    warnings.push('portalTotal=' + portalTotal + ' anormal yüksek — tarih filtresi çalışmamış olabilir');
+  }
+  if (targetRefs && targetRefs.size > 0 && portalTotal > 0) {
+    const ratio = targetRefs.size / portalTotal;
+    // DB'de portaldan 3x fazla ref varsa filtre muhtemelen uygulanmadı
+    if (ratio > 3) {
+      warnings.push('DB/portal oranı ' + ratio.toFixed(1) + 'x (DB:' + targetRefs.size + ' >> Portal:' + portalTotal + ')');
+    }
+  }
+
+  if (warnings.length) {
+    logger.warn('[PRE-FLIGHT] UYARI: ' + warnings.join(' | '));
+  } else {
+    logger.info('[PRE-FLIGHT] OK — portal=' + portalTotal + (targetRefs ? ' hedef=' + targetRefs.size : ''));
+  }
+  return warnings; // boş array = OK
+}
+
 async function _getTotalCount(page) {
   try {
     const text = await page.evaluate(() => {
@@ -351,6 +379,9 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
   // effectiveTotal: DB sayısını baz al, erken break önlenir; portalTotal log için
   const effectiveTotal = targetRefs ? targetRefs.size : (portalTotal || 99999);
   logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt (portal=' + portalTotal + '), maxSayfa=' + totalPages);
+
+  // Reality Checker pre-flight
+  await _preFlightCheck(page, targetRefs, portalTotal);
 
   const processedRefs = new Set();
 
@@ -706,13 +737,20 @@ async function _applyStableSort(page) {
 }
 
 async function _getTotalPages(page) {
+  // Pagination text'ten doğrudan parse — select element'e güvenmiyoruz
+  // (select yanlış element match edebilir → yanlış rowsPerPage → erken çıkış)
   try {
-    const rowsPerPage = await page.evaluate(() => {
-      const sel = document.querySelector('.rdt_Pagination select, select');
-      return sel ? parseInt(sel.value) : 30;
+    const text = await page.evaluate(() => {
+      const el = document.querySelector('[class*="rdt_Pagination"]');
+      return el ? el.innerText : '';
     });
-    const total = await _getTotalCount(page);
-    if (total && rowsPerPage) return Math.ceil(total / rowsPerPage);
+    // "1-30 of 18,416" ya da "1 - 30 of 18416"
+    const m = text.match(/(\d+)\s*-\s*(\d+)\s+of\s+([\d,]+)/i);
+    if (m) {
+      const rowsPerPage = parseInt(m[2]) - parseInt(m[1]) + 1; // 30-1+1=30
+      const total = parseInt(m[3].replace(/,/g, ''));
+      if (total > 0 && rowsPerPage > 0) return Math.ceil(total / rowsPerPage);
+    }
   } catch(e) {}
   return 9999;
 }

@@ -3,6 +3,14 @@ const { sendBulkSMS, applyPortalFilters } = require('./sms-sender');
 const { getState, setState, getCount, logSMS, updateAfterSMS } = require('./db');
 const logger = require('./logger');
 
+// ─── Incident Log ─────────────────────────────────────────────────────────────
+// agency-agents/strategy/runbooks/scenario-incident-response.md pattern:
+// Structured incident reporting: type + severity + context
+function logIncident(type, severity, context) {
+  // severity: 'P1' (job durdu) | 'P2' (erken çıkış) | 'P3' (uyarı)
+  logger.warn('[INCIDENT:' + type + ':' + severity + '] ' + JSON.stringify(context));
+}
+
 class JobManager {
   constructor(eventBus) {
     this.bus = eventBus;
@@ -100,7 +108,7 @@ class JobManager {
       if (e.code === 'JOB_STOPPED') {
         this.bus.emit('status', { module: 'scraper', state: 'stopped' });
       } else {
-        logger.error('Scraper hata: ' + e.message);
+        logIncident('scraper_fatal', 'P1', { error: e.message, elapsed: Date.now() - startTime });
         this.bus.emit('scraper:error', { error: e.message });
         this.bus.emit('status', { module: 'scraper', state: 'error' });
       }
@@ -207,7 +215,7 @@ class JobManager {
         this.bus.emit('sms:done', { stopped: true, duration: Date.now() - startTime });
         this.bus.emit('status', { module: 'sms', state: 'stopped' });
       } else {
-        logger.error('SMS hata: ' + e.message);
+        logIncident('sms_fatal', 'P1', { error: e.message, filters, elapsed: Date.now() - startTime });
         this.bus.emit('sms:error', { error: e.message });
         this.bus.emit('status', { module: 'sms', state: 'error' });
       }

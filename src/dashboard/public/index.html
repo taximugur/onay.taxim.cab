@@ -425,6 +425,12 @@ socket.on('sms:done', (d) => {
 
 socket.on('sms:error', (d) => addLog('sms-log', '✗ HATA: ' + d.error, 'err'));
 
+socket.on('sms:heartbeat', (d) => {
+  const mins = Math.floor(d.elapsed / 60), secs = d.elapsed % 60;
+  const t = mins > 0 ? mins + 'dk ' + secs + 's' : secs + 's';
+  addLog('sms-log', '⏳ Çalışıyor (' + t + ' geçti) — ' + fmt(d.processed) + '/' + fmt(d.totalCount) + ' işlendi, sayfa geçişi veya session bekleniyor...', 'warn');
+});
+
 // ─── Scraper controls ────────────────────────────────────────────────────────
 function scraperStart(fresh) {
   if (fresh && !confirm('Sıfırdan tarama: sayaç sıfırlanır, DB korunur. Devam?')) return;

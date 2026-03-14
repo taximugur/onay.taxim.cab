@@ -145,6 +145,19 @@ class JobManager {
     this.bus.emit('sms:start', { filters });
     logger.info('SMS gönderimi başladı');
 
+    // Heartbeat: her 30sn'de "hâlâ çalışıyor" eventi — uzun sessizliklerde client'a kanıt
+    const heartbeatInterval = setInterval(() => {
+      if (!this.currentJob) return;
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const p = this.lastSmsProgress;
+      this.bus.emit('sms:heartbeat', {
+        elapsed,
+        processed: p ? p.processed : 0,
+        totalCount: p ? p.totalCount : 0,
+        percent:    p ? p.percent   : 0,
+      });
+    }, 30000);
+
     try {
       const result = await sendBulkSMS(
         this._page,
@@ -226,6 +239,7 @@ class JobManager {
         this.bus.emit('status', { module: 'sms', state: 'error' });
       }
     } finally {
+      clearInterval(heartbeatInterval);
       this.currentJob = null;
     }
   }

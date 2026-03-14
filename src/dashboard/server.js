@@ -19,7 +19,7 @@ function startDashboard(jobManager, eventBus, port) {
   // Event bus → Socket.io forward
   const fwd = (event) => eventBus.on(event, (data) => io.emit(event, data));
   ['scraper:page','scraper:done','scraper:error',
-   'sms:count','sms:start','sms:progress','sms:sent','sms:done','sms:error',
+   'sms:count','sms:start','sms:progress','sms:sent','sms:done','sms:error','sms:heartbeat',
    'status'].forEach(fwd);
 
   // REST: state

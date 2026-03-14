@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const { getState, getCount, queryRecords } = require('../db');
 const ExcelJS = require('exceljs');
+const logger = require('../logger');
 
 function startDashboard(jobManager, eventBus, port) {
   port = port || parseInt(process.env.DASHBOARD_PORT) || 3333;
@@ -70,6 +71,10 @@ function startDashboard(jobManager, eventBus, port) {
       paused: jobManager._paused,
       lastSmsProgress: jobManager.lastSmsProgress,
       smsStartTime: jobManager.smsStartTime,
+    });
+
+    socket.on('disconnect', (reason) => {
+      logger.info('Dashboard client bağlantısı kesildi: ' + reason + (jobManager.currentJob ? ' (job çalışıyor: ' + jobManager.currentJob + ')' : ''));
     });
 
     socket.on('scraper:start',  (opts) => jobManager.startScraper(opts && opts.fresh).catch(e => socket.emit('error', e.message)));

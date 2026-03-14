@@ -54,6 +54,11 @@ async function main() {
     await browser.close();
     process.exit(0);
   });
+
+  // SIGHUP: SSH bağlantısı kesilirse (Mac kapanırsa) process'i öldürme
+  process.on('SIGHUP', () => {
+    logger.info('SIGHUP alındı (SSH disconnect?) — görmezden geliniyor, job devam ediyor.');
+  });
 }
 
 main().catch(err => {

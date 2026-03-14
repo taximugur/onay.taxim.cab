@@ -24,21 +24,6 @@ async function shot(page, name) {
  * filters: { kayitStart, kayitEnd, search }  (tarihler YYYY-MM-DD formatında)
  */
 async function applyPortalFilters(page, filters = {}, _retry = 0) {
-  // Tarih filtresi varsa — DB'den gerçekçi sayı hesapla
-  if (filters.kayitStart && filters.kayitEnd) {
-    const { getRefsByDateRange, getTodayBlockedRefs } = require('./db');
-    const rangeRefs = getRefsByDateRange(filters.kayitStart, filters.kayitEnd);
-    if (filters.resend) {
-      // Tekrar gönderim modu: daha önce gönderilenler dahil → tüm DB aralığı
-      logger.info('Sayım (resend): DB aralık=' + rangeRefs.size);
-      return rangeRefs.size;
-    }
-    const blocked      = getTodayBlockedRefs();
-    const stillPending = [...rangeRefs].filter(r => !blocked.has(r)).length;
-    logger.info('Sayım: DB aralık=' + rangeRefs.size + ', zaten gönderilmiş=' + (rangeRefs.size - stillPending) + ', bekleyen=' + stillPending);
-    return stillPending;
-  }
-
   await navigateToApprovalPage(page);
 
   // Session kontrol — login sayfasına redirect olduysa yeniden giriş yap
@@ -389,10 +374,9 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
 
   const totalPages = await _getTotalPages(page);
   const portalTotal = await _getTotalCount(page);
-  // effectiveTotal: hedef ref'lerden daha önce gönderilmişleri çıkar (ilerleme çubuğu doğru görünsün)
-  const alreadyBlocked = targetRefs ? [...blockedRefs].filter(r => targetRefs.has(r)).length : 0;
-  const effectiveTotal = targetRefs ? targetRefs.size - alreadyBlocked : portalTotal;
-  logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt (DB:' + (targetRefs ? targetRefs.size : '?') + ' - gönderilmiş:' + alreadyBlocked + '), portal=' + portalTotal + ', ' + totalPages + ' sayfa');
+  // effectiveTotal: portalın alt kısmında gözüken gerçek sayı
+  const effectiveTotal = portalTotal || (targetRefs ? targetRefs.size : 0);
+  logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt, portal=' + portalTotal + ', ' + totalPages + ' sayfa');
 
   const processedRefs = new Set();
 

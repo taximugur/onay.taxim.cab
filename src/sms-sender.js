@@ -24,14 +24,6 @@ async function shot(page, name) {
  * filters: { kayitStart, kayitEnd, search }  (tarihler YYYY-MM-DD formatında)
  */
 async function applyPortalFilters(page, filters = {}, _retry = 0) {
-  // Tarih filtresi varsa — portal calendar yerine direkt DB'den say
-  const { countByDateRange } = require('./db');
-  if (filters.kayitStart && filters.kayitEnd) {
-    const dbCount = countByDateRange(filters.kayitStart, filters.kayitEnd);
-    logger.info('DB filtre sayımı: ' + dbCount + ' kayıt (' + filters.kayitStart + ' — ' + filters.kayitEnd + ')');
-    return dbCount;
-  }
-
   await navigateToApprovalPage(page);
 
   // Session kontrol — login sayfasına redirect olduysa yeniden giriş yap
@@ -382,8 +374,10 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
 
   const totalPages = await _getTotalPages(page);
   const portalTotal = await _getTotalCount(page);
-  const effectiveTotal = targetRefs ? targetRefs.size : portalTotal;
-  logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt, portal=' + portalTotal + ', ' + totalPages + ' sayfa');
+  // effectiveTotal: hedef ref'lerden daha önce gönderilmişleri çıkar (ilerleme çubuğu doğru görünsün)
+  const alreadyBlocked = targetRefs ? [...blockedRefs].filter(r => targetRefs.has(r)).length : 0;
+  const effectiveTotal = targetRefs ? targetRefs.size - alreadyBlocked : portalTotal;
+  logger.info('SMS tarama başladı: hedef=' + effectiveTotal + ' kayıt (DB:' + (targetRefs ? targetRefs.size : '?') + ' - gönderilmiş:' + alreadyBlocked + '), portal=' + portalTotal + ', ' + totalPages + ' sayfa');
 
   const processedRefs = new Set();
 

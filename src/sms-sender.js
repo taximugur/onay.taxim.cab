@@ -38,7 +38,19 @@ async function applyPortalFilters(page, filters = {}, _retry = 0) {
     return 0;
   }
 
-  await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 });
+  try {
+    await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 });
+  } catch(e) {
+    // Timeout — SPA'da URL değişmese de session expire olmuş olabilir
+    logger.warn('applyPortalFilters: rdt_TableRow timeout — session kontrol...');
+    await shot(page, 'timeout-session-check');
+    if (_retry < 2) {
+      await refreshSession(page);
+      return applyPortalFilters(page, filters, _retry + 1);
+    }
+    logger.warn('applyPortalFilters: tablo yüklenemedi, 0 döndürülüyor');
+    return 0;
+  }
 
   // DOM'u kaydet — selector'leri kesinleştirmek için
   try {
@@ -356,13 +368,11 @@ async function sendBulkSMS(page, filters, onProgress, checkPauseStop) {
     }
   }
 
-  // Tablo yüklenene bekle
-  await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 60000 }).catch(async () => {
-    const url = page.url();
-    if (url.includes('login') || !url.includes('validation')) {
-      await refreshSession(page);
-      await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 }).catch(() => {});
-    }
+  // Tablo yüklenene bekle — timeout'ta URL fark etmeksizin refreshSession (SPA'da URL değişmez)
+  await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 60000 }).catch(async (e) => {
+    logger.warn('sendBulkSMS: tablo timeout — refreshSession: ' + e.message);
+    await refreshSession(page);
+    await page.waitForSelector('[class*="rdt_TableRow"]', { timeout: 30000 }).catch(() => {});
   });
 
   // Stabil sıralama: referansNo sütununa tıkla (re-sort drift önler)
